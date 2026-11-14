@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agent Shop
 
-## Getting Started
+Shopping without the runaround. Three tools in one web app:
 
-First, run the development server:
+- **Shop**: one search bar. Results come from Amazon, eBay, Etsy, Best Buy, Walmart and Target, sorted lowest price first. A **Filter** box takes plain English ("new only, under $200, from Best Buy or Amazon").
+- **Sell**: describe what you're selling. You get comparable listings from eBay, Mercari and Facebook Marketplace, a recommended price for each site, and a listing ready to post.
+- **Deals**: coupon codes and sales for any store, each linked to the page it was found on. No affiliate links and no tracking.
+
+## Trust rules
+
+- **Every price links to a real page.** The model has to quote the exact price text, and we check that text appears on the page. If it doesn't, the result is dropped.
+- **Deals are checked the same way.** A code (or the discount text) has to appear on the source page.
+- **All LLM output is validated** with OpenAI structured outputs plus a zod schema. Anything that fails validation is thrown away.
+- **Product URLs and vendors come from the page we read**, never from model output.
+
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # then fill in keys
+npm run dev                  # http://localhost:3000
+npm run seed                 # optional: warm the cache with demo queries (app must be running)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Environment variables
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `EXA_API_KEY` | yes | Live web search and page text (Exa) |
+| `OPENAI_API_KEY` | yes | Structured extraction, filters, listing copy |
+| `OPENAI_MODEL` | yes | Model name, e.g. `gpt-4.1-mini` (not hardcoded) |
+| `EBAY_OAUTH_TOKEN` | no | Enables **Post to eBay** (Sell Inventory API, user token) |
+| `EBAY_APP_ID` | no | Reserved for eBay Browse API |
+| `EBAY_ENV` | no | Set to `sandbox` to use eBay's sandbox |
+| `STRIPE_SECRET_KEY` | no | Enables **Payment link** on the Sell page |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+All API keys stay on the server. The browser only talks to `/api/*` routes.
 
-## Learn More
+## How it works
 
-To learn more about Next.js, take a look at the following resources:
+| Route | What it does |
+| --- | --- |
+| `POST /api/search` | One Exa search per vendor (with page text) → OpenAI extracts title, price, condition → drop anything without a grounded price → sort by price |
+| `POST /api/filter` | Plain English → `{ maxPrice, minPrice, vendors, conditions, mustInclude, mustExclude }` → applied to the current results |
+| `POST /api/price-check` | Exa comps on eBay / Mercari / Facebook → grounded prices → range plus a recommended price slightly under the lowest credible comp → listing copy per site |
+| `POST /api/deals` | Exa search across coupon sites and retailer promo pages → grounded deals saved to SQLite with `foundAt` |
+| `GET /api/deals?store=bestbuy` | Stored deals for a store that haven't expired (powers the "N deals" badges on search results) |
+| `POST /api/ebay/list` | Inventory item → offer → publish (only when `EBAY_OAUTH_TOKEN` is set) |
+| `POST /api/payment-link` | Stripe Payment Link at the chosen price (only when `STRIPE_SECRET_KEY` is set) |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Every Exa query and LLM extraction is cached in SQLite (`data/agent-shop.db`), keyed by its inputs. A repeated search is instant and works without a network connection. Delete the file to clear the cache.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**Stack:** Next.js (App Router), TypeScript, Tailwind, better-sqlite3, exa-js, openai, zod.
 
-## Deploy on Vercel
+## Known limitations
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Facebook Marketplace posting is copy-and-open.** Meta has no public listing API, so we copy the listing to your clipboard and open Marketplace's create page. We never automate or scrape Facebook.
+- **Facebook comps are sparse.** Few Marketplace pages are publicly indexed.
+- **Deal codes are not auto-applied at checkout.** That would need a browser extension, which is out of scope.
+- **eBay posting needs a fully set-up seller account** (business policies and an inventory location) and at least one public `https` photo URL. A locally uploaded photo isn't public when running on localhost.
+- **Prices are whatever the indexed page said when it was crawled**, so they can lag the live site. Every result links to its source so you can check.
+- **USD only.**
