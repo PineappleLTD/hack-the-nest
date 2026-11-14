@@ -85,14 +85,13 @@ export async function extractProduct(page: WebPage, query: string, vendor: Vendo
 /** Search all trusted vendors, extract grounded prices, sort cheapest first. */
 export async function searchProducts(query: string): Promise<Product[]> {
   // One Exa call per vendor keeps results diverse (a single combined call tends to be all-Amazon).
-  const perVendor = await Promise.all(
-    SHOP_VENDORS.map((v) =>
-      webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 }).catch((e) => {
-        console.error(`[search:${v.id}]`, e instanceof Error ? e.message : e);
-        return [] as WebPage[];
-      }),
-    ),
+  const settled = await Promise.allSettled(
+    SHOP_VENDORS.map((v) => webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 })),
   );
+  const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
+  failures.forEach((f) => console.error("[search]", f.reason instanceof Error ? f.reason.message : f.reason));
+  if (failures.length === settled.length) throw failures[0].reason;
+  const perVendor = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 
   const pages: { page: WebPage; vendor: Vendor }[] = [];
   const seen = new Set<string>();
