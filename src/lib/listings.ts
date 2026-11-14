@@ -116,6 +116,7 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
     "price-check",
     key,
     async () => {
+      if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set");
       const [compsByMarket, copy] = await Promise.all([
         Promise.all(RESALE_MARKETS.map((m) => findComps(input, m.id))),
         writeListings(input),
