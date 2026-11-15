@@ -15,7 +15,17 @@ export type Deal = {
   sourceUrl: string;
   sourceHost: string;
   foundAt: number;
+  /** What the deal covers. Only "sitewide" deals are ever auto-applied; null for deals stored before this was tracked. */
+  scope: DealScope | null;
+  appliesTo: string | null;
+  percentOff: number | null;
+  amountOff: number | null;
+  minSpend: number | null;
+  maxSavings: number | null;
 };
+
+export const DEAL_SCOPES = ["sitewide", "category", "product"] as const;
+export type DealScope = (typeof DEAL_SCOPES)[number];
 
 const DealsSchema = z.object({
   deals: z.array(
@@ -25,6 +35,12 @@ const DealsSchema = z.object({
       description: z.string(),
       discountText: z.string(),
       expiresAt: z.string().nullable(),
+      scope: z.enum(DEAL_SCOPES),
+      appliesTo: z.string(),
+      percentOff: z.number().nullable(),
+      amountOff: z.number().nullable(),
+      minSpend: z.number().nullable(),
+      maxSavings: z.number().nullable(),
     }),
   ),
 });
@@ -37,7 +53,11 @@ Rules:
 - description: one short sentence describing the deal.
 - discountText: the headline discount exactly as the page phrases it (e.g. "20% off", "$10 off $50", "Free shipping").
 - expiresAt: expiration date as YYYY-MM-DD if the page states one, else null.
-- Skip expired deals, generic "sign up for emails" offers with no stated discount, and deals for other stores.
+- scope: "sitewide" ONLY if the page says it applies to the whole store, any order, or sitewide. "category" for a department, brand, collection, or "select items". "product" for one named product or one seller's listing. If unsure, use "product".
+- appliesTo: what it covers in a few words, e.g. "any order", "laptops", "Dual Power Fuel Transfer Pump".
+- percentOff: the percent number for a percent discount ("20% off" -> 20), else null. amountOff: the dollar amount for a dollars-off discount ("$10 off" -> 10), else null.
+- minSpend: the stated minimum order in USD ("$10 off $50+" -> 50), else null. maxSavings: a stated cap on savings ("20% off, max $40" -> 40), else null.
+- Skip expired deals, generic "sign up for emails" offers with no stated discount, deals for other stores, and plain product prices with no discount or code (e.g. "Blink Mini for $19.99").
 - Return at most 8 deals, best first. Return an empty list if the page has none.`;
 
 function today() {
@@ -56,10 +76,17 @@ function rowToDeal(r: Record<string, unknown>): Deal {
     sourceUrl: r.source_url as string,
     sourceHost: hostOf(r.source_url as string),
     foundAt: r.found_at as number,
+    scope: (r.scope as DealScope) ?? null,
+    appliesTo: (r.applies_to as string) ?? null,
+    percentOff: (r.percent_off as number) ?? null,
+    amountOff: (r.amount_off as number) ?? null,
+    minSpend: (r.min_spend as number) ?? null,
+    maxSavings: (r.max_savings as number) ?? null,
   };
 }
 
 const ACTIVE = `(expires_at IS NULL OR expires_at >= ?)`;
+const SCOPE_ORDER = `CASE scope WHEN 'sitewide' THEN 0 WHEN 'category' THEN 1 ELSE 2 END`;
 
 /** Deals change daily; re-search the web after this long instead of serving cached pages forever. */
 const DEAL_SEARCH_MAX_AGE = 12 * 3600 * 1000;
@@ -67,15 +94,20 @@ const DEAL_SEARCH_MAX_AGE = 12 * 3600 * 1000;
 export function dealsForStore(key: string): Deal[] {
   return (
     db
-      .prepare(`SELECT * FROM deals WHERE store_key = ? AND ${ACTIVE} ORDER BY (code IS NULL), found_at DESC`)
+      .prepare(`SELECT * FROM deals WHERE store_key = ? AND ${ACTIVE} ORDER BY ${SCOPE_ORDER}, (code IS NULL), found_at DESC`)
       .all(key, today()) as Record<string, unknown>[]
   ).map(rowToDeal);
+}
+
+/** Deals for a whole store (sitewide or category), leaving out ones tied to a single product. */
+export function storeWideDeals(key: string): Deal[] {
+  return dealsForStore(key).filter((d) => d.scope === "sitewide" || d.scope === "category");
 }
 
 /** Active deal counts for each shop vendor id, for search-result badges. */
 export function dealCountsByVendor(): Record<string, number> {
   const rows = db
-    .prepare(`SELECT store_key, COUNT(*) AS n FROM deals WHERE ${ACTIVE} GROUP BY store_key`)
+    .prepare(`SELECT store_key, COUNT(*) AS n FROM deals WHERE ${ACTIVE} AND scope IN ('sitewide', 'category') GROUP BY store_key`)
     .all(today()) as { store_key: string; n: number }[];
   const ids = new Set(SHOP_VENDORS.map((v) => v.id));
   return Object.fromEntries(rows.filter((r) => ids.has(r.store_key)).map((r) => [r.store_key, r.n]));
@@ -88,6 +120,15 @@ function grounded(text: string, d: z.infer<typeof DealsSchema>["deals"][number])
 }
 
 /** Throws on LLM/API errors; returns [] when the page has no grounded deals. */
+/** Keep a number only if it is literally in the text (e.g. 20 -> "20%", 10 -> "$10"). */
+function groundedNumber(n: number | null, text: string, kind: "percent" | "dollars"): number | null {
+  if (n == null || !Number.isFinite(n) || n <= 0) return null;
+  const t = text.replace(/,/g, "").replace(/\s+/g, "");
+  const forms = [String(n), n.toFixed(2)];
+  const ok = forms.some((f) => (kind === "percent" ? t.includes(`${f}%`) : t.includes(`$${f}`)));
+  return ok ? n : null;
+}
+
 async function extractDeals(page: WebPage, query: string) {
   const data = await structured(
     "deal_extraction",
@@ -100,6 +141,12 @@ async function extractDeals(page: WebPage, query: string) {
     .filter((d) => d.store.trim() && d.discountText.trim() && grounded(page.text, d))
     .map((d) => ({
       ...d,
+      appliesTo: d.appliesTo.trim() || null,
+      percentOff: groundedNumber(d.percentOff, `${d.discountText} ${d.description}`, "percent"),
+      amountOff: groundedNumber(d.amountOff, `${d.discountText} ${d.description}`, "dollars"),
+      // Fine print can sit anywhere on the page, so check minimums and caps against the page text.
+      minSpend: groundedNumber(d.minSpend, page.text, "dollars"),
+      maxSavings: groundedNumber(d.maxSavings, page.text, "dollars"),
       code: d.code?.trim() || null,
       expiresAt: d.expiresAt && /^\d{4}-\d{2}-\d{2}$/.test(d.expiresAt) ? d.expiresAt : null,
       sourceUrl: page.url,
@@ -107,9 +154,16 @@ async function extractDeals(page: WebPage, query: string) {
     }));
 }
 
-const insert = db.prepare(`INSERT OR IGNORE INTO deals
-  (id, store, store_key, query, code, description, discount_text, expires_at, source_url, source_title, found_at)
-  VALUES (@id, @store, @store_key, @query, @code, @description, @discount_text, @expires_at, @source_url, @source_title, @found_at)`);
+// Re-finding a deal refreshes its details and "found" time.
+const insert = db.prepare(`INSERT INTO deals
+  (id, store, store_key, query, code, description, discount_text, expires_at, source_url, source_title, found_at,
+   scope, applies_to, percent_off, amount_off, min_spend, max_savings)
+  VALUES (@id, @store, @store_key, @query, @code, @description, @discount_text, @expires_at, @source_url, @source_title, @found_at,
+   @scope, @applies_to, @percent_off, @amount_off, @min_spend, @max_savings)
+  ON CONFLICT(id) DO UPDATE SET store = excluded.store, store_key = excluded.store_key, description = excluded.description,
+   expires_at = excluded.expires_at, source_title = excluded.source_title, found_at = excluded.found_at, scope = excluded.scope,
+   applies_to = excluded.applies_to, percent_off = excluded.percent_off, amount_off = excluded.amount_off,
+   min_spend = excluded.min_spend, max_savings = excluded.max_savings`);
 
 /** Search the web for deals, store any grounded ones, return active deals for this query/store. */
 export async function findDeals(query: string): Promise<Deal[]> {
@@ -144,6 +198,12 @@ export async function findDeals(query: string): Promise<Deal[]> {
         source_url: d.sourceUrl,
         source_title: d.sourceTitle,
         found_at: now,
+        scope: d.scope,
+        applies_to: d.appliesTo,
+        percent_off: d.percentOff,
+        amount_off: d.amountOff,
+        min_spend: d.minSpend,
+        max_savings: d.maxSavings,
       });
     }
   })();
@@ -153,7 +213,7 @@ export async function findDeals(query: string): Promise<Deal[]> {
   const rows = db
     .prepare(
       `SELECT * FROM deals WHERE (store_key = ? OR id IN (SELECT value FROM json_each(?))) AND ${ACTIVE}
-       ORDER BY (code IS NULL), found_at DESC`,
+       ORDER BY ${SCOPE_ORDER}, (code IS NULL), found_at DESC`,
     )
     .all(key, JSON.stringify(ids), today()) as Record<string, unknown>[];
   return rows.map(rowToDeal);

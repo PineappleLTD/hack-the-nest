@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { dealsForStore, findDeals, type Deal } from "@/lib/deals";
+import { dealsForStore, findDeals, storeWideDeals, type Deal } from "@/lib/deals";
 import { mapLimit } from "@/lib/llm";
 import { storeKey, vendorById } from "@/lib/vendors";
 import { badRequest, readJson, serverError } from "@/lib/http";
@@ -17,7 +17,8 @@ export async function GET(req: Request) {
 /**
  * POST { query } searches the web for fresh deals and stores them.
  * POST { stores: ["amazon", "bestbuy"] } does that for each shop vendor and returns active deals per store,
- * which is how search results pick up deals automatically. A store whose lookup fails falls back to stored deals.
+ * which is how search results pick up deals automatically. Only store-wide deals are returned (not ones tied to a single
+ * product), and a store whose lookup fails falls back to stored deals.
  */
 export async function POST(req: Request) {
   const body = await readJson<{ query?: string; stores?: string[] }>(req);
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
       } catch (err) {
         console.error("[deals]", id, err instanceof Error ? err.message : err);
       }
-      return [id, dealsForStore(id)];
+      return [id, storeWideDeals(id)];
     });
     return NextResponse.json({ deals: Object.fromEntries(entries) });
   }

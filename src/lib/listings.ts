@@ -19,6 +19,8 @@ export type MarketReport = {
   high: number | null;
   median: number | null;
   recommended: number | null;
+  /** Set when this market had no comps and `recommended` comes from these other markets' listings instead. */
+  estimatedFrom: string[] | null;
   title: string;
   description: string;
 };
@@ -110,7 +112,7 @@ async function findComps(input: SellInput, marketId: string): Promise<Product[]>
 export async function priceCheck(input: SellInput): Promise<PriceCheck> {
   const key = { item: input.item.trim().toLowerCase(), condition: input.condition, notes: input.notes?.trim() ?? "" };
   const markets = await cached(
-    "price-check",
+    "price-check-v2",
     key,
     async () => {
       if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set");
@@ -127,6 +129,10 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
         const comps = compsByMarket[i];
         const prices = comps.map((c) => c.price);
         const c = copy?.listings.find((l) => l.market === m.id) ?? fallbackCopy(input);
+        // No comps here (Facebook Marketplace is login-walled, so it's rarely indexed): suggest a price
+        // from the other markets' real listings, and say so.
+        const others = prices.length ? [] : RESALE_MARKETS.filter((_, j) => j !== i && compsByMarket[j].length > 0);
+        const otherPrices = others.flatMap((o) => compsByMarket[RESALE_MARKETS.indexOf(o)].map((p) => p.price));
         return {
           market: m.id,
           marketName: m.name,
@@ -134,7 +140,8 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
           low: prices.length ? Math.min(...prices) : null,
           high: prices.length ? Math.max(...prices) : null,
           median: prices.length ? median(prices) : null,
-          recommended: recommendPrice(prices),
+          recommended: prices.length ? recommendPrice(prices) : recommendPrice(otherPrices),
+          estimatedFrom: others.length ? others.map((o) => o.name) : null,
           title: c.title,
           description: c.description,
         };

@@ -34,7 +34,24 @@ function open(): Database.Database {
       found_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS deals_store_key ON deals(store_key);
+    CREATE TABLE IF NOT EXISTS stripe_accounts (
+      seller_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
+  // Columns added after the first release; older databases get them on open.
+  const dealCols = new Set((db.prepare("PRAGMA table_info(deals)").all() as { name: string }[]).map((c) => c.name));
+  for (const [name, type] of [
+    ["scope", "TEXT"],
+    ["applies_to", "TEXT"],
+    ["percent_off", "REAL"],
+    ["amount_off", "REAL"],
+    ["min_spend", "REAL"],
+    ["max_savings", "REAL"],
+  ]) {
+    if (!dealCols.has(name)) db.exec(`ALTER TABLE deals ADD COLUMN ${name} ${type}`);
+  }
   return db;
 }
 
