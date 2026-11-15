@@ -107,13 +107,16 @@ export async function searchUrls(query: string, opts: { includeDomains: string[]
     "exa-urls",
     { query, ...opts },
     async () => {
+      const t0 = Date.now();
       const res = await withSlot(() =>
         retrying(() => exa().search(query, { numResults: opts.numResults, includeDomains: opts.includeDomains, contents: false })),
       ).catch((err) => {
         throw new Error(`Exa web search failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       const cost = (res as { costDollars?: { total?: number } }).costDollars?.total;
-      console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} urls ${JSON.stringify(query)} ${opts.includeDomains.join(",")}`);
+      console.log(
+        `[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} urls ${JSON.stringify(query)} ${opts.includeDomains.join(",")} ${Date.now() - t0}ms`,
+      );
       return res.results.map((r) => ({ url: r.url, title: r.title ?? "" }));
     },
     (hits) => hits.length > 0,
@@ -125,6 +128,8 @@ export async function searchUrls(query: string, opts: { includeDomains: string[]
 const PAGE_MAX_AGE_HOURS = 1;
 /** Our own copy is only kept briefly, so a search repeated while typing doesn't pay twice. */
 const PAGE_CACHE_MS = 10 * 60 * 1000;
+/** A page that takes longer than this to crawl is skipped, so one slow page can't hold up a store's results. */
+const LIVECRAWL_TIMEOUT_MS = 5_000;
 
 /**
  * Current text of these pages. Prices come from here, so nothing older than an hour is used:
@@ -144,15 +149,20 @@ export async function freshPages(urls: string[], maxCharacters = 6000): Promise<
   }
   const missing = unique.filter((u) => !have.has(u));
   if (missing.length) {
+    const t0 = Date.now();
     const res = await withSlot(() =>
       retrying(() =>
-        exa().getContents(missing, { text: { maxCharacters }, maxAgeHours: PAGE_MAX_AGE_HOURS, livecrawlTimeout: 10_000 }),
+        exa().getContents(missing, { text: { maxCharacters }, maxAgeHours: PAGE_MAX_AGE_HOURS, livecrawlTimeout: LIVECRAWL_TIMEOUT_MS }),
       ),
     ).catch((err) => {
       throw new Error(`Exa page fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     const cost = (res as { costDollars?: { total?: number } }).costDollars?.total;
-    console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} pages x${missing.length}`);
+    let host = "?";
+    try {
+      host = new URL(missing[0]).hostname.replace(/^www\./, "");
+    } catch {}
+    console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} pages x${missing.length} ${host} ${Date.now() - t0}ms`);
     const put = db.prepare("INSERT OR REPLACE INTO cache (key, namespace, value, created_at) VALUES (?, 'page', ?, ?)");
     for (const r of res.results) {
       if (typeof r.text !== "string" || !r.text) continue;
