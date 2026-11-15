@@ -24,6 +24,35 @@ export type WebSearchOptions = {
   maxAgeMs?: number;
 };
 
+// A search fans out to six vendors and deal lookups add more, which can trip Exa's per-network
+// rate limit. Cap concurrent calls, and retry rate-limit / server errors briefly.
+const MAX_CONCURRENT = 6;
+let active = 0;
+const waiting: (() => void)[] = [];
+
+async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (active >= MAX_CONCURRENT) await new Promise<void>((resolve) => waiting.push(resolve));
+  active++;
+  try {
+    return await fn();
+  } finally {
+    active--;
+    waiting.shift()?.();
+  }
+}
+
+async function retrying<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = (err as { statusCode?: number }).statusCode ?? 0;
+      if (attempt >= 2 || !(status === 429 || status >= 500)) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+}
+
 /** Exa search with page text, cached in SQLite by query + options. */
 export async function webSearch(query: string, opts: WebSearchOptions = {}): Promise<WebPage[]> {
   const options = {
@@ -36,11 +65,17 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
     "exa",
     { query, ...options },
     async () => {
-      const res = await exa().search(query, {
-        numResults: options.numResults,
-        ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
-        ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
-        contents: { text: { maxCharacters: options.maxCharacters } },
+      const res = await withSlot(() =>
+        retrying(() =>
+          exa().search(query, {
+            numResults: options.numResults,
+            ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
+            ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
+            contents: { text: { maxCharacters: options.maxCharacters } },
+          }),
+        ),
+      ).catch((err) => {
+        throw new Error(`Exa web search failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       const cost = (res as { costDollars?: { total?: number } }).costDollars?.total;
       console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} ${JSON.stringify(query)} ${options.includeDomains?.join(",") ?? ""}`);
