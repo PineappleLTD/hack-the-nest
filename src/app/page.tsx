@@ -2,12 +2,15 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import { CartGlassReveal } from "@/components/ui/liquid-glass-logo-reveal";
 import SearchWithCategory, { type SearchMode } from "@/components/ui/search-with-category";
-import { DustField } from "@/components/DustField";
 import { STARTED_KEY } from "@/lib/started";
 import { ShopResults } from "@/components/ShopResults";
 import { SellResults } from "@/components/SellResults";
+
+// three.js loads as its own chunk, after the page is interactive.
+const DustField = dynamic(() => import("@/components/DustField").then((m) => m.DustField), { ssr: false });
 
 const HEADLINE: Record<SearchMode, string> = {
   shop: "find it for less",
@@ -58,6 +61,10 @@ function Home() {
     document.querySelector<HTMLInputElement>("form[role=search] input[type=text]")?.focus({ preventScroll: true });
   };
 
+  // Stripe onboarding runs in its own tab and comes back here.
+  const stripe = params.get("stripe");
+  if (stripe) return <StripeReturn ok={stripe === "return"} message={params.get("message")} />;
+
   return (
     <>
       <DustField dim={active} stir={busy} />
@@ -75,12 +82,12 @@ function Home() {
 
               {/* First visit only: a big way in once the cart has arrived. */}
               <div className="landing-cta w-full">
-                <div className="min-h-0 overflow-hidden px-1 pb-2 pt-6">
+                <div className="min-h-0 overflow-hidden px-5 pb-12 pt-6">
                   <button
                     onClick={getStarted}
-                    className="cta-in mx-auto flex h-20 w-full max-w-md items-center justify-center rounded-md bg-brand text-2xl font-semibold tracking-[-0.02em] text-black transition-colors hover:bg-[#ff7440] sm:h-24 sm:text-[28px]"
+                    className="gold-button cta-in mx-auto flex h-20 w-full max-w-md items-center justify-center rounded-full text-2xl font-semibold tracking-[-0.01em] text-white sm:h-24 sm:text-[28px]"
                   >
-                    Get started
+                    Shop
                   </button>
                 </div>
               </div>
@@ -129,6 +136,31 @@ function Home() {
         </div>
       )}
     </>
+  );
+}
+
+/** The tab Stripe sends the seller back to: close it if we can, since the listing waits in the tab they came from. */
+function StripeReturn({ ok, message }: { ok: boolean; message: string | null }) {
+  useEffect(() => {
+    if (ok) window.close();
+  }, [ok]);
+  return (
+    <div className="flex min-h-[80svh] flex-col items-center justify-center text-center">
+      <h1 className="text-[clamp(32px,5vw,48px)] font-light leading-[1.1] tracking-[-0.035em] text-foreground/90">
+        {ok ? "Back from Stripe" : "Stripe didn't connect"}
+      </h1>
+      <p className="mt-3 max-w-md text-muted-foreground">
+        {ok ? "Close this tab and return to your listing." : (message ?? "Something went wrong on the way back from Stripe.")}
+      </p>
+      {!ok && (
+        <a
+          href="/api/stripe/connect/start"
+          className="mt-8 flex h-12 items-center rounded-md bg-brand px-6 text-[15px] font-medium text-black transition-colors hover:bg-[#ff7440]"
+        >
+          Try again
+        </a>
+      )}
+    </div>
   );
 }
 

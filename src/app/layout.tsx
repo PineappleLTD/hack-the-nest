@@ -1,10 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope } from "next/font/google";
 import { STARTED_SCRIPT } from "@/lib/started";
 import "./globals.css";
-
-// pineapplehacks.com's face.
-const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Agent Shop",
@@ -19,7 +15,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     // The head script sets data-started before paint, so the attribute is expected to differ on hydration.
-    <html lang="en" className={manrope.variable} suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: STARTED_SCRIPT }} />
       </head>

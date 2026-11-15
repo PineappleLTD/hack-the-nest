@@ -28,7 +28,7 @@ Speed and ease first: one search bar replaces visiting six stores, and the cheap
 ## Capabilities and Constraints
 
 - Next.js App Router, TypeScript, Tailwind. All API keys stay on the server; the browser only calls `/api/*`.
-- Requires `EXA_API_KEY`, `OPENAI_API_KEY`, `OPENAI_MODEL`. eBay posting and Stripe links are optional and only appear when their keys are set.
+- Requires `EXA_API_KEY` and `ANTHROPIC_API_KEY` (`ANTHROPIC_MODEL` is optional and defaults to `claude-haiku-5-5`). eBay posting and Stripe links are optional and only appear when their keys are set.
 - USD only. Prices can lag the live store page because they come from the indexed copy.
 - Facebook Marketplace has no listing API: posting is copy-and-open only.
 - Deal codes are not auto-applied at checkout.

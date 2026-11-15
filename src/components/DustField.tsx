@@ -122,109 +122,140 @@ export function DustField({ dim = false, stir = false }: { dim?: boolean; stir?:
   const target = useRef({ dim, stir });
   target.current = { dim, stir };
 
+  // The dust is hidden on the first-visit landing, and building the field takes main-thread time, so it
+  // starts only once the site is revealed: straight after load for returning visitors, or just after the
+  // Shop button's reveal has settled, so neither the glass cart nor the reveal has to share frames with it.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-    } catch {
-      return; // No WebGL: the page stays plain black.
+    const html = document.documentElement;
+    let stop: (() => void) | undefined;
+    let timer = 0;
+    let watch: MutationObserver | undefined;
+    const begin = (delay: number) => {
+      timer = window.setTimeout(() => (stop = startField(host, target)), delay);
+    };
+    if (html.hasAttribute("data-started")) begin(0);
+    else {
+      watch = new MutationObserver(() => {
+        if (!html.hasAttribute("data-started")) return;
+        watch?.disconnect();
+        begin(900);
+      });
+      watch.observe(html, { attributes: true, attributeFilter: ["data-started"] });
     }
-    renderer.setClearColor("#000000");
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.domElement.style.display = "block";
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    host.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-    const material = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      uniforms: {
-        uTime: { value: 0 },
-        uSize: { value: 0.014 },
-        uScale: { value: 1 },
-        uBrightness: { value: 0 },
-        uMotion: { value: 2.5 },
-      },
-      transparent: true,
-      depthWrite: false,
-    });
-
-    let points: THREE.Points | null = null;
-    let built: View | null = null;
-    let rebuild = 0;
-
-    const build = (view: View) => {
-      if (built && Math.abs(built.aspect - view.aspect) < 0.05 && Math.abs(built.camZ - view.camZ) < 0.5) return;
-      built = view;
-      const w = host.clientWidth, h = host.clientHeight;
-      const count = Math.round(Math.min(300_000, Math.max(60_000, w * h * 0.18)));
-      const { positions, colors } = buildGround(view, count);
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      if (points) {
-        scene.remove(points);
-        points.geometry.dispose();
-      }
-      points = new THREE.Points(geo, material);
-      scene.add(points);
-    };
-
-    const resize = () => {
-      const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      const span = 10 / Math.min(0.5, 0.95 * camera.aspect);
-      const tanHalf = Math.tan((25 * Math.PI) / 180);
-      const camZ = span / 2 / tanHalf;
-      const camY = (0.42 - 0.5) * span;
-      camera.position.set(0, camY, camZ);
-      camera.lookAt(0, camY, 0);
-      camera.updateProjectionMatrix();
-      material.uniforms.uScale.value = (h * renderer.getPixelRatio()) / 2;
-      const view = { camY, camZ, tanHalf, aspect: camera.aspect, baseY: (0.5 - 0.94) * 10 };
-      clearTimeout(rebuild);
-      if (!built) build(view);
-      else rebuild = window.setTimeout(() => build(view), 250);
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(host);
-
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const clock = new THREE.Clock();
-    let shown = 0;
-    renderer.setAnimationLoop(() => {
-      const dt = Math.min(clock.getDelta(), 0.1);
-      const u = material.uniforms;
-      const { dim, stir } = target.current;
-      // Ease toward the wanted state so dimming and stirring never jump.
-      const k = 1 - Math.exp(-dt * 2.2);
-      shown = Math.min(1, shown + dt / 1.6);
-      const bright = (dim ? 0.16 : 0.55) * smoothstep(0, 1, shown);
-      u.uBrightness.value += (bright - u.uBrightness.value) * (shown < 1 ? 1 : k);
-      u.uMotion.value += ((stir ? 5 : 2.5) - u.uMotion.value) * k;
-      // Advance the sway by its own clock so speeding up never jumps the phase.
-      if (!still) u.uTime.value += dt * (0.6 + 0.4 * u.uMotion.value);
-      renderer.render(scene, camera);
-    });
-
     return () => {
-      clearTimeout(rebuild);
-      ro.disconnect();
-      renderer.setAnimationLoop(null);
-      points?.geometry.dispose();
-      material.dispose();
-      renderer.dispose();
-      renderer.domElement.remove();
+      watch?.disconnect();
+      clearTimeout(timer);
+      stop?.();
     };
   }, []);
 
   return <div ref={hostRef} aria-hidden="true" className="site-dust pointer-events-none fixed inset-0 -z-10 bg-black" />;
+}
+
+function startField(host: HTMLDivElement, target: { current: { dim: boolean; stir: boolean } }) {
+  let renderer: THREE.WebGLRenderer;
+  try {
+    // No antialiasing: the points are a pixel or two across, and multisampling them is most of the cost.
+    renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+  } catch {
+    return; // No WebGL: the page stays plain black.
+  }
+  renderer.setClearColor("#000000");
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+  renderer.domElement.style.display = "block";
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "100%";
+  host.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+  const material = new THREE.ShaderMaterial({
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    uniforms: {
+      uTime: { value: 0 },
+      uSize: { value: 0.014 },
+      uScale: { value: 1 },
+      uBrightness: { value: 0 },
+      uMotion: { value: 2.5 },
+    },
+    transparent: true,
+    depthWrite: false,
+  });
+
+  let points: THREE.Points | null = null;
+  let built: View | null = null;
+  let rebuild = 0;
+
+  const build = (view: View) => {
+    if (built && Math.abs(built.aspect - view.aspect) < 0.05 && Math.abs(built.camZ - view.camZ) < 0.5) return;
+    built = view;
+    const w = host.clientWidth, h = host.clientHeight;
+    const count = Math.round(Math.min(160_000, Math.max(50_000, w * h * 0.12)));
+    const { positions, colors } = buildGround(view, count);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    if (points) {
+      scene.remove(points);
+      points.geometry.dispose();
+    }
+    points = new THREE.Points(geo, material);
+    scene.add(points);
+  };
+
+  const resize = () => {
+    const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    const span = 10 / Math.min(0.5, 0.95 * camera.aspect);
+    const tanHalf = Math.tan((25 * Math.PI) / 180);
+    const camZ = span / 2 / tanHalf;
+    const camY = (0.42 - 0.5) * span;
+    camera.position.set(0, camY, camZ);
+    camera.lookAt(0, camY, 0);
+    camera.updateProjectionMatrix();
+    material.uniforms.uScale.value = (h * renderer.getPixelRatio()) / 2;
+    const view = { camY, camZ, tanHalf, aspect: camera.aspect, baseY: (0.5 - 0.94) * 10 };
+    clearTimeout(rebuild);
+    if (!built) build(view);
+    else rebuild = window.setTimeout(() => build(view), 250);
+  };
+  resize();
+  const ro = new ResizeObserver(resize);
+  ro.observe(host);
+
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const clock = new THREE.Clock();
+  let shown = 0;
+  let lastFrame = 0;
+  renderer.setAnimationLoop((now) => {
+    // At most ~60 frames a second: the dust moves slowly, and 120Hz screens would otherwise draw it twice as often.
+    if (now - lastFrame < 15) return;
+    lastFrame = now;
+    const dt = Math.min(clock.getDelta(), 0.1);
+    const u = material.uniforms;
+    const { dim, stir } = target.current;
+    // Ease toward the wanted state so dimming and stirring never jump.
+    const k = 1 - Math.exp(-dt * 2.2);
+    shown = Math.min(1, shown + dt / 1.6);
+    const bright = (dim ? 0.18 : 0.62) * smoothstep(0, 1, shown);
+    u.uBrightness.value += (bright - u.uBrightness.value) * (shown < 1 ? 1 : k);
+    u.uMotion.value += ((stir ? 5 : 2.5) - u.uMotion.value) * k;
+    // Advance the sway by its own clock so speeding up never jumps the phase.
+    if (!still) u.uTime.value += dt * (0.6 + 0.4 * u.uMotion.value);
+    renderer.render(scene, camera);
+  });
+
+  return () => {
+    clearTimeout(rebuild);
+    ro.disconnect();
+    renderer.setAnimationLoop(null);
+    points?.geometry.dispose();
+    material.dispose();
+    renderer.dispose();
+    renderer.domElement.remove();
+  };
 }

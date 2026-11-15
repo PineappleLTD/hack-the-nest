@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Check, Copy, Package, SlidersHorizontal, X } from "lucide-react";
+import { ArrowUpRight, Check, Copy, Package, SlidersHorizontal, X } from "lucide-react";
 import type { Product } from "@/lib/products";
 import type { Deal } from "@/lib/deals";
 import { bestDeal, type AppliedDeal } from "@/lib/discount";
@@ -267,24 +267,40 @@ function ResultRow({ row, index, cheapest }: { row: Row; index: number; cheapest
   );
 }
 
+/**
+ * A store's code. Applied, it shows what it saved; otherwise it's a code to try at checkout, since we only change
+ * a price when the store's own site says the code is sitewide. Either way it links to where it was found.
+ */
 function DealCode({ deal, applied }: { deal: Deal; applied: AppliedDeal | null }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={async () => {
-        await navigator.clipboard.writeText(deal.code!);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      title={`${deal.description} Found on ${deal.sourceHost}. Copy code`}
-      className={`relative z-10 flex items-center gap-1.5 rounded-sm animate-in fade-in duration-500 ${
-        applied ? "text-brand" : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      <span className="font-medium tracking-wide">{deal.code}</span>
-      <span>{applied ? `saves ${money(applied.saved)}` : deal.discountText}</span>
-    </button>
+    <span className="relative z-10 flex flex-wrap items-center gap-x-3 gap-y-1 animate-in fade-in duration-500">
+      <button
+        type="button"
+        onClick={async () => {
+          await navigator.clipboard.writeText(deal.code!);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+        title={`${deal.description} Copy code`}
+        className={`flex items-center gap-1.5 rounded-sm transition-colors ${
+          applied ? "text-brand" : "text-muted-foreground hover:text-foreground"
+        }`}
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        {!applied && <span>Try</span>}
+        <span className="font-medium tracking-wide">{deal.code}</span>
+        <span>{applied ? `saves ${money(applied.saved)}` : deal.discountText}</span>
+      </button>
+      <a
+        href={deal.sourceUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-0.5 rounded-sm text-muted-foreground underline decoration-[#4a4a47] underline-offset-4 transition-colors hover:text-foreground"
+      >
+        {deal.sourceHost}
+        <ArrowUpRight className="h-3 w-3" />
+      </a>
+    </span>
   );
 }

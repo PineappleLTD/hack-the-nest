@@ -54,7 +54,7 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
-  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -93,7 +93,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  height: calc(50svh - var(--page-top) - 1.75rem);
+  /* Never so short that the cart disappears: on a very short window the bar sits a little low instead. */
+  height: max(calc(50svh - var(--page-top) - 1.75rem), 14rem);
   transition: height 0.9s var(--ease-out-expo);
 }
 html:not([data-started]) .hero-stage {
@@ -103,11 +104,6 @@ html:not([data-started]) .hero-stage {
 .hero-glass {
   flex: 1 1 0;
   min-height: 0;
-}
-@media (max-height: 560px) {
-  html[data-started] .hero-glass {
-    visibility: hidden;
-  }
 }
 /* On the landing only the glass cart plays; the dust arrives with the rest of the site. */
 .site-dust {
@@ -152,6 +148,48 @@ html:not([data-started]) .home-only {
 }
 .cta-in {
   animation: rise 0.9s var(--ease-out-expo) 2.5s both;
+}
+
+/* The landing's one button, in metal: a gold gradient with a lit top edge, a darker rim,
+   and a sheen that passes across it now and then. */
+.gold-button {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: linear-gradient(172deg, #f8e7a4 0%, #e0b54c 24%, #a8771f 55%, #c99a3a 78%, #7d5413 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 248, 214, 0.9),
+    inset 0 -4px 10px rgba(80, 48, 0, 0.45),
+    0 0 0 1px rgba(110, 74, 16, 0.7),
+    0 14px 36px -16px rgba(224, 181, 76, 0.6);
+  text-shadow: 0 1px 2px rgba(60, 34, 0, 0.65);
+  transition:
+    filter 0.3s,
+    transform 0.3s var(--ease-out-expo);
+}
+.gold-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 38%, rgba(255, 252, 235, 0.6) 50%, transparent 62%);
+  transform: translateX(-120%);
+  animation: sheen 5s var(--ease-out-expo) 3.4s infinite;
+}
+.gold-button:hover {
+  filter: brightness(1.08) saturate(1.05);
+}
+.gold-button:active {
+  transform: translateY(1px);
+}
+@keyframes sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  30%,
+  100% {
+    transform: translateX(120%);
+  }
 }
 
 /* Browser-drawn surfaces stay in the dark world. */
