@@ -5,12 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { CartGlassReveal } from "@/components/ui/liquid-glass-logo-reveal";
 import SearchWithCategory, { type SearchMode } from "@/components/ui/search-with-category";
 import { DustField } from "@/components/DustField";
+import { STARTED_KEY } from "@/lib/started";
 import { ShopResults } from "@/components/ShopResults";
 import { SellResults } from "@/components/SellResults";
 
 const HEADLINE: Record<SearchMode, string> = {
   shop: "find it for less",
-  sell: "see what it sells for",
+  sell: "sell it for more",
 };
 // Typing runs the search once it pauses this long; Enter runs it right away.
 const PAUSE_MS = 1000;
@@ -35,8 +36,7 @@ function Home() {
   const [photo, setPhoto] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const active = query !== "";
-  // Sell shows three marketplaces side by side, so it gets the wider column; the bar matches it.
-  const width = !active ? "max-w-2xl" : urlMode === "sell" ? "max-w-5xl" : "max-w-3xl";
+  const width = active ? "max-w-3xl" : "max-w-2xl";
 
   const run = useCallback((q: string, m: SearchMode) => router.replace(href(q, m), { scroll: false }), [router]);
 
@@ -49,16 +49,20 @@ function Home() {
     return () => clearTimeout(t);
   }, [text, mode, query, urlMode, run]);
 
-  // The cart mark's weave speeds up while a search runs.
-  useEffect(() => {
-    document.documentElement.toggleAttribute("data-busy", busy);
-  }, [busy]);
+  // First visit: the landing's button reveals the search, and we remember it was used.
+  const getStarted = () => {
+    try {
+      localStorage.setItem(STARTED_KEY, "1");
+    } catch {}
+    document.documentElement.toggleAttribute("data-started", true);
+    document.querySelector<HTMLInputElement>("form[role=search] input[type=text]")?.focus({ preventScroll: true });
+  };
 
   return (
     <>
       <DustField dim={active} stir={busy} />
 
-      <section className={`flex flex-col items-center transition-[padding] duration-700 ease-out-expo ${active ? "pt-0" : "pt-[4vh]"}`}>
+      <section className="flex flex-col items-center">
         {/* The hero folds away once there are results to show. */}
         <div
           className="grid w-full transition-[grid-template-rows,opacity] duration-700 ease-out-expo"
@@ -66,17 +70,34 @@ function Home() {
           aria-hidden={active}
         >
           <div className="min-h-0 overflow-hidden">
-            <div className="flex flex-col items-center pb-10">
-              <CartGlassReveal tileSize={190} className="h-[min(36vh,320px)] w-full max-w-[440px] mix-blend-screen" />
-              <h1 className="text-center text-[clamp(40px,6.4vw,64px)] font-light leading-[1.05] tracking-[-0.035em] text-foreground/90">
-                {HEADLINE[mode]}
-              </h1>
+            <div className="hero-stage">
+              <CartGlassReveal tileSize={280} className="hero-glass w-full max-w-[560px] mix-blend-screen" />
+
+              {/* First visit only: a big way in once the cart has arrived. */}
+              <div className="landing-cta w-full">
+                <div className="min-h-0 overflow-hidden px-1 pb-2 pt-6">
+                  <button
+                    onClick={getStarted}
+                    className="cta-in mx-auto flex h-20 w-full max-w-md items-center justify-center rounded-md bg-brand text-2xl font-semibold tracking-[-0.02em] text-black transition-colors hover:bg-[#ff7440] sm:h-24 sm:text-[28px]"
+                  >
+                    Get started
+                  </button>
+                </div>
+              </div>
+
+              <div className="home-fold w-full">
+                <div className="min-h-0 overflow-hidden">
+                  <h1 className="pb-10 text-center text-[clamp(40px,6.4vw,64px)] font-light leading-[1.05] tracking-[-0.035em] text-foreground/90">
+                    {HEADLINE[mode]}
+                  </h1>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
         <div
-          className={`sticky top-3 z-30 w-full transition-[max-width] duration-700 ease-out-expo ${width}`}
+          className={`home-only sticky top-3 z-30 w-full transition-[max-width] duration-700 ease-out-expo ${width}`}
         >
           <SearchWithCategory
             mode={mode}

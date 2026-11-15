@@ -96,6 +96,23 @@ export default function SearchWithCategory({
           className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent px-3 text-base sm:px-4 sm:text-[17px] shadow-none ring-offset-0 focus-visible:outline-none focus-visible:ring-0"
         />
 
+        {/* Clear */}
+        {value && (
+          <div className="flex shrink-0 items-center pr-1">
+            <button
+              type="button"
+              onClick={() => {
+                onValueChange("")
+                document.getElementById(id)?.focus()
+              }}
+              className="grid h-10 w-10 place-items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         {/* Sell: optional photo */}
         {mode === "sell" && onPhotoChange && (
           <div className="flex shrink-0 items-center pr-1">

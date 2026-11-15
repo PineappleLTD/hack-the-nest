@@ -1,8 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Manrope } from "next/font/google";
-import { Nav } from "@/components/Nav";
+import { STARTED_SCRIPT } from "@/lib/started";
 import "./globals.css";
 
+// pineapplehacks.com's face.
 const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin"] });
 
 export const metadata: Metadata = {
@@ -10,12 +11,20 @@ export const metadata: Metadata = {
   description: "Lowest prices from trusted stores, honest resale pricing, and deals with real sources.",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#000000",
+  colorScheme: "dark",
+};
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={manrope.variable}>
+    // The head script sets data-started before paint, so the attribute is expected to differ on hydration.
+    <html lang="en" className={manrope.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: STARTED_SCRIPT }} />
+      </head>
       <body className="min-h-dvh font-sans antialiased">
-        <Nav />
-        <main className="relative z-10 mx-auto w-full max-w-5xl px-4 pb-24 sm:px-6">{children}</main>
+        <main className="relative z-10 mx-auto w-full max-w-5xl px-4 pt-(--page-top) pb-24 sm:px-6">{children}</main>
       </body>
     </html>
   );
