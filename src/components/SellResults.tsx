@@ -1,0 +1,239 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { ArrowUpRight, Check } from "lucide-react";
+import type { MarketReport, PriceCheck } from "@/lib/listings";
+import { money } from "@/lib/format";
+import { MarketsSkeleton } from "./Skeletons";
+import { EmptyState, ErrorState } from "./States";
+
+const CONDITIONS = ["New", "Like new", "Good", "Fair", "For parts"];
+const OPEN_URL: Record<string, { label: string; url: string }> = {
+  facebook: { label: "Open Marketplace", url: "https://www.facebook.com/marketplace/create/item" },
+  mercari: { label: "Open Mercari", url: "https://www.mercari.com/sell/" },
+};
+
+type Result = PriceCheck & { photoUrl: string | null };
+
+export function SellResults({ item, photo, onBusy }: { item: string; photo: File | null; onBusy: (busy: boolean) => void }) {
+  const [condition, setCondition] = useState("Good");
+  const [result, setResult] = useState<Result | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setError(null);
+    setResult(null);
+    onBusy(true);
+    const form = new FormData();
+    form.set("item", item);
+    form.set("condition", condition);
+    if (photo) form.set("photo", photo);
+    fetch("/api/price-check", { method: "POST", body: form, signal: ctrl.signal })
+      .then(async (r) => {
+        const json = await r.json();
+        if (!r.ok) throw new Error(json.error ?? "Price check failed");
+        setResult(json);
+      })
+      .catch((e) => {
+        if (e.name !== "AbortError") setError(e.message);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) onBusy(false);
+      });
+    return () => {
+      ctrl.abort();
+      onBusy(false);
+    };
+  }, [item, condition, photo, reload, onBusy]);
+
+  return (
+    <>
+      <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
+        <span className="text-[13px] text-muted-foreground">Condition</span>
+        <div role="radiogroup" aria-label="Condition" className="flex rounded-md border border-input p-0.5">
+          {CONDITIONS.map((c) => (
+            <button
+              key={c}
+              role="radio"
+              aria-checked={condition === c}
+              onClick={() => setCondition(c)}
+              className={`h-7 rounded-sm px-2.5 text-[13px] transition-colors ${
+                condition === c ? "bg-white/10 text-foreground" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <ErrorState message={error} onRetry={() => setReload((n) => n + 1)} />}
+      {!error && !result && <MarketsSkeleton />}
+      {result && <Markets result={result} />}
+    </>
+  );
+}
+
+function Markets({ result }: { result: Result }) {
+  if (!result.markets.some((m) => m.comps.length > 0))
+    return (
+      <EmptyState
+        title="No comparable listings found"
+        body="We only price from listings we can link to. Try a more specific name, like the brand, model and size."
+      />
+    );
+  return (
+    <div className="grid border-t border-line lg:grid-cols-3 lg:divide-x lg:divide-line">
+      {result.markets.map((m, i) => (
+        <Market key={m.market} m={m} index={i} result={result} />
+      ))}
+    </div>
+  );
+}
+
+function Market({ m, result, index }: { m: MarketReport; result: Result; index: number }) {
+  const [price, setPrice] = useState(m.recommended != null ? m.recommended.toFixed(2) : "");
+  const [title, setTitle] = useState(m.title);
+  const [description, setDescription] = useState(m.description);
+  const [copied, setCopied] = useState(false);
+  const [showComps, setShowComps] = useState(false);
+  const [action, setAction] = useState<{ busy?: string; link?: { label: string; url: string }; error?: string }>({});
+  const open = OPEN_URL[m.market];
+
+  async function copy() {
+    await navigator.clipboard.writeText(`${title}\n\n${price ? `Price: ${money(Number(price))}\n\n` : ""}${description}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function post(kind: "ebay" | "stripe") {
+    setAction({ busy: kind });
+    try {
+      const r = await fetch(kind === "ebay" ? "/api/ebay/list" : "/api/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          kind === "ebay"
+            ? { title, description, price: Number(price), condition: result.input.condition, imageUrls: result.photoUrl ? [location.origin + result.photoUrl] : [] }
+            : { name: title, price: Number(price) },
+        ),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error);
+      setAction({ link: { label: kind === "ebay" ? "Listed on eBay" : "Payment link", url: json.url } });
+    } catch (err) {
+      setAction({ error: err instanceof Error ? err.message : `Couldn't ${kind === "ebay" ? "post to eBay" : "create the payment link"}` });
+    }
+  }
+
+  const ghost = "h-9 rounded-md border border-input px-3.5 text-[13px] text-foreground transition-colors hover:border-[#4a4a47] disabled:opacity-50";
+
+  return (
+    <section className="rise flex flex-col border-b border-line py-6 lg:border-b-0 lg:px-6 lg:first:pl-0 lg:last:pr-0" style={{ animationDelay: `${index * 70}ms` }}>
+      <div className="flex items-baseline justify-between text-[13px]">
+        <h2 className="font-medium text-foreground">{m.marketName}</h2>
+        <span className="text-muted-foreground">
+          {m.comps.length} listing{m.comps.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {m.recommended != null ? (
+        <label className="mt-4 flex items-baseline gap-1">
+          <span className="sr-only">Your price on {m.marketName}</span>
+          <span className="text-2xl font-light text-muted-foreground">$</span>
+          <input
+            value={price}
+            onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))}
+            inputMode="decimal"
+            className="w-full bg-transparent text-[44px] font-light leading-none tracking-[-0.03em] tabular-nums text-foreground outline-none"
+          />
+        </label>
+      ) : (
+        <p className="mt-4 text-sm text-muted-foreground">Not enough listings on {m.marketName} to suggest a price.</p>
+      )}
+      {m.low != null && m.high != null && (
+        <p className="mt-2 text-[13px] tabular-nums text-muted-foreground">
+          Sells for {money(m.low)}
+          {m.high !== m.low && <> to {money(m.high)}</>}
+          {m.median != null && m.comps.length > 2 && <>, median {money(m.median)}</>}
+        </p>
+      )}
+
+      {m.comps.length > 0 && (
+        <div className="mt-3">
+          <button
+            onClick={() => setShowComps((s) => !s)}
+            aria-expanded={showComps}
+            className="rounded-sm text-[13px] text-muted-foreground underline decoration-[#4a4a47] underline-offset-4 transition-colors hover:text-foreground"
+          >
+            {showComps ? "Hide listings" : "See the listings"}
+          </button>
+          {showComps && (
+            <ul className="mt-2 animate-in fade-in duration-300">
+              {m.comps.map((c) => (
+                <li key={c.id}>
+                  <a
+                    href={c.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 border-b border-line py-2 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <span className="line-clamp-1 flex-1">{c.title}</span>
+                    <span className="tabular-nums text-foreground">{money(c.price)}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="mt-6 grid gap-1">
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          aria-label={`Listing title for ${m.marketName}`}
+          className="-mx-2 rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[15px] font-medium text-foreground outline-none transition-colors hover:border-input focus:border-brand/70"
+        />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={7}
+          aria-label={`Listing description for ${m.marketName}`}
+          className="-mx-2 resize-none rounded-md border border-transparent bg-transparent px-2 py-1.5 text-sm leading-relaxed text-muted-foreground outline-none transition-colors hover:border-input focus:border-brand/70 focus:text-foreground"
+        />
+      </div>
+
+      <div className="mt-auto flex flex-wrap gap-2 pt-4">
+        <button onClick={copy} className="flex h-9 items-center gap-1.5 rounded-md bg-brand px-3.5 text-[13px] font-medium text-black transition-colors hover:bg-[#ff7440]">
+          {copied && <Check className="h-3.5 w-3.5" />}
+          {copied ? "Copied" : "Copy listing"}
+        </button>
+        {m.market === "ebay" && result.ebayEnabled && (
+          <button onClick={() => post("ebay")} disabled={!!action.busy || !Number(price)} className={ghost}>
+            {action.busy === "ebay" ? "Posting…" : "Post to eBay"}
+          </button>
+        )}
+        {open && (
+          <a href={open.url} target="_blank" rel="noopener noreferrer" onClick={copy} className={`${ghost} flex items-center gap-1`}>
+            {open.label}
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </a>
+        )}
+        {result.stripeEnabled && (
+          <button onClick={() => post("stripe")} disabled={!!action.busy || !Number(price)} className={ghost}>
+            {action.busy === "stripe" ? "Creating…" : "Payment link"}
+          </button>
+        )}
+      </div>
+      {action.link && (
+        <a href={action.link.url} target="_blank" rel="noopener noreferrer" className="mt-3 break-all text-[13px] text-brand underline underline-offset-4">
+          {action.link.label}: {action.link.url}
+        </a>
+      )}
+      {action.error && <p className="mt-3 text-[13px] text-destructive">{action.error}</p>}
+    </section>
+  );
+}
