@@ -20,11 +20,11 @@ function pages(...ps: { url: string; text: string; title?: string; id?: string }
 }
 
 describe("searchUrls", () => {
-  it("is a URL-only search (contents: false) restricted to the given domains", async () => {
+  it("is a URL-only lite search (contents: false) restricted to the given domains", async () => {
     exa.search.mockResolvedValue(hits("https://www.amazon.com/dp/B00N9TAZHW"));
     const res = await searchUrls("altoids", { includeDomains: ["amazon.com"], numResults: 15 });
     expect(res).toEqual([{ url: "https://www.amazon.com/dp/B00N9TAZHW", title: "Title of https://www.amazon.com/dp/B00N9TAZHW" }]);
-    expect(exa.search).toHaveBeenCalledWith("altoids", { numResults: 15, includeDomains: ["amazon.com"], contents: false });
+    expect(exa.search).toHaveBeenCalledWith("altoids", { type: "lite", numResults: 15, includeDomains: ["amazon.com"], contents: false });
     expect(exa.keys).toEqual(["test-exa-key-not-real"]);
   });
 

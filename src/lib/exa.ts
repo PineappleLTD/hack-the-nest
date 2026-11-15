@@ -101,15 +101,19 @@ export type SearchHit = { url: string; title: string };
 /**
  * URLs and titles only (no page text). Which pages a store has for a query changes slowly and
  * carries no prices, so this is cached for a day.
+ * Exa's "lite" search: measured at ~0.2s against ~2s for the default type on the same store query,
+ * returning the same product pages, for less per call.
  */
 export async function searchUrls(query: string, opts: { includeDomains: string[]; numResults: number }): Promise<SearchHit[]> {
   return cached(
     "exa-urls",
-    { query, ...opts },
+    { query, ...opts, type: "lite" },
     async () => {
       const t0 = Date.now();
       const res = await withSlot(() =>
-        retrying(() => exa().search(query, { numResults: opts.numResults, includeDomains: opts.includeDomains, contents: false })),
+        retrying(() =>
+          exa().search(query, { type: "lite", numResults: opts.numResults, includeDomains: opts.includeDomains, contents: false }),
+        ),
       ).catch((err) => {
         throw new Error(`Exa web search failed: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -132,11 +136,33 @@ const PAGE_CACHE_MS = 10 * 60 * 1000;
 const LIVECRAWL_TIMEOUT_MS = 5_000;
 
 /**
+ * Page reads run one page per request, so they get their own, wider lane than searches: wide enough
+ * for a whole search (6 stores x 6 pages) at once, since slow stores hold a slot for the full crawl
+ * timeout and anything queued behind them would wait that long too.
+ */
+const MAX_CONCURRENT_PAGES = 40;
+let activePages = 0;
+const waitingPages: (() => void)[] = [];
+
+async function withPageSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activePages >= MAX_CONCURRENT_PAGES) await new Promise<void>((resolve) => waitingPages.push(resolve));
+  activePages++;
+  try {
+    return await fn();
+  } finally {
+    activePages--;
+    waitingPages.shift()?.();
+  }
+}
+
+/**
  * Current text of these pages. Prices come from here, so nothing older than an hour is used:
  * Exa live-crawls stale pages, and our cache only de-duplicates requests within ten minutes.
- * Pages Exa can't fetch are left out.
+ * Each page is its own request and `onPage` is called as each one arrives, so a page that crawls
+ * in one second is used straight away instead of waiting for the slowest page. Pages Exa can't fetch
+ * are left out; if every read fails, that's an outage or a bad key, and it throws.
  */
-export async function freshPages(urls: string[], maxCharacters = 6000): Promise<WebPage[]> {
+export async function freshPages(urls: string[], maxCharacters = 6000, onPage?: (page: WebPage) => void): Promise<WebPage[]> {
   const unique = [...new Set(urls)];
   const keyFor = (url: string) => `page:${hashKey({ url, maxCharacters })}`;
   const now = Date.now();
@@ -145,32 +171,50 @@ export async function freshPages(urls: string[], maxCharacters = 6000): Promise<
     const row = db.prepare("SELECT value, created_at FROM cache WHERE key = ?").get(keyFor(url)) as
       | { value: string; created_at: number }
       | undefined;
-    if (row && now - row.created_at < PAGE_CACHE_MS) have.set(url, JSON.parse(row.value) as WebPage);
+    if (row && now - row.created_at < PAGE_CACHE_MS) {
+      const page = JSON.parse(row.value) as WebPage;
+      have.set(url, page);
+      onPage?.(page);
+    }
   }
   const missing = unique.filter((u) => !have.has(u));
   if (missing.length) {
     const t0 = Date.now();
-    const res = await withSlot(() =>
-      retrying(() =>
-        exa().getContents(missing, { text: { maxCharacters }, maxAgeHours: PAGE_MAX_AGE_HOURS, livecrawlTimeout: LIVECRAWL_TIMEOUT_MS }),
-      ),
-    ).catch((err) => {
-      throw new Error(`Exa page fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-    const cost = (res as { costDollars?: { total?: number } }).costDollars?.total;
+    let cost = 0;
+    let costKnown = false;
+    const put = db.prepare("INSERT OR REPLACE INTO cache (key, namespace, value, created_at) VALUES (?, 'page', ?, ?)");
+    const reads = await Promise.allSettled(
+      missing.map(async (url) => {
+        const res = await withPageSlot(() =>
+          retrying(() =>
+            exa().getContents([url], { text: { maxCharacters }, maxAgeHours: PAGE_MAX_AGE_HOURS, livecrawlTimeout: LIVECRAWL_TIMEOUT_MS }),
+          ),
+        );
+        const c = (res as { costDollars?: { total?: number } }).costDollars?.total;
+        if (c != null) {
+          cost += c;
+          costKnown = true;
+        }
+        for (const r of res.results) {
+          if (typeof r.text !== "string" || !r.text) continue;
+          // Exa echoes the requested URL as `id`; `url` can be a canonicalized form of it.
+          const requested = missing.includes(r.id) ? r.id : r.url;
+          const page: WebPage = { url: requested, title: r.title ?? "", text: r.text, image: r.image ?? null, publishedDate: r.publishedDate ?? null };
+          have.set(requested, page);
+          put.run(keyFor(requested), JSON.stringify(page), Date.now());
+          onPage?.(page);
+        }
+      }),
+    );
     let host = "?";
     try {
       host = new URL(missing[0]).hostname.replace(/^www\./, "");
     } catch {}
-    console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} pages x${missing.length} ${host} ${Date.now() - t0}ms`);
-    const put = db.prepare("INSERT OR REPLACE INTO cache (key, namespace, value, created_at) VALUES (?, 'page', ?, ?)");
-    for (const r of res.results) {
-      if (typeof r.text !== "string" || !r.text) continue;
-      // Exa echoes the requested URL as `id`; `url` can be a canonicalized form of it.
-      const requested = missing.includes(r.id) ? r.id : r.url;
-      const page: WebPage = { url: requested, title: r.title ?? "", text: r.text, image: r.image ?? null, publishedDate: r.publishedDate ?? null };
-      have.set(requested, page);
-      put.run(keyFor(requested), JSON.stringify(page), Date.now());
+    console.log(`[exa] ${costKnown ? `$${cost.toFixed(4)}` : "cost n/a"} pages x${missing.length} ${host} ${Date.now() - t0}ms`);
+    const failed = reads.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed.length === missing.length) {
+      const err = failed[0].reason;
+      throw new Error(`Exa page fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return unique.flatMap((u) => (have.has(u) ? [have.get(u)!] : []));

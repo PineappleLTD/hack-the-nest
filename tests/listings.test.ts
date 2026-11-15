@@ -86,9 +86,10 @@ describe("priceCheck", () => {
   it("finds per-market comps with the fresh two-step flow (URL search, then <=1h-old pages)", async () => {
     sellWeb();
     await priceCheck(INPUT);
-    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good listing", { numResults: 15, includeDomains: ["ebay.com"], contents: false });
-    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good for sale", { numResults: 15, includeDomains: ["mercari.com"], contents: false });
+    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good listing", { type: "lite", numResults: 15, includeDomains: ["ebay.com"], contents: false });
+    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good for sale", { type: "lite", numResults: 15, includeDomains: ["mercari.com"], contents: false });
     expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good marketplace for sale", {
+      type: "lite",
       numResults: 15,
       includeDomains: ["facebook.com"],
       contents: false,
@@ -129,9 +130,28 @@ describe("priceCheck", () => {
     const many = Array.from({ length: 12 }, (_, i) => productPage(`https://www.ebay.com/itm/3880000000${10 + i}`, `Switch OLED #${i}`, `${250 + i}.00`));
     sellWeb({ "ebay.com": many.map((p) => p.url) }, many);
     const { markets } = await priceCheck(INPUT);
-    const ebayFetch = exa.getContents.mock.calls.find(([urls]) => urls[0].includes("ebay.com"))!;
-    expect(ebayFetch[0]).toHaveLength(8);
+    const ebayFetched = exa.getContents.mock.calls.flatMap(([urls]) => urls).filter((u) => u.includes("ebay.com"));
+    expect(ebayFetched).toHaveLength(8);
     expect(markets[0].comps).toHaveLength(8);
+  });
+
+  it("says whether a condition applies to the item, as Claude judged it", async () => {
+    sellWeb();
+    copyLlm.mockResolvedValue({ ...COPY, conditionApplies: false });
+    expect((await priceCheck(INPUT)).conditionApplies).toBe(false);
+  });
+
+  it("offers a condition when Claude couldn't say (no copy)", async () => {
+    sellWeb();
+    copyLlm.mockResolvedValue(null);
+    expect((await priceCheck({ ...INPUT, notes: "no copy" })).conditionApplies).toBe(true);
+  });
+
+  it("searches without a condition when the seller didn't pick one", async () => {
+    sellWeb();
+    await priceCheck({ item: "Tortilla chips" });
+    expect(exa.search).toHaveBeenCalledWith("Tortilla chips listing", expect.anything());
+    expect(copyLlm.mock.calls[0][3]).toContain("Condition: (not given)");
   });
 
   it("uses Claude's listing copy per market", async () => {

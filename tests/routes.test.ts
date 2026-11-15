@@ -108,6 +108,32 @@ describe("POST /api/search", () => {
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe("Exa web search failed: Invalid API key");
   });
+
+  const events = async (res: Response) =>
+    (await res.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+
+  it("with stream: true, sends each product as it's found, then the final list", async () => {
+    installWeb({ hits, pages });
+    insertDeal(db, { store: "Best Buy", store_key: "bestbuy", code: "SAVE10", discount_text: "$10 off $50+", source_url: "https://www.bestbuy.com/deals", scope: "sitewide" });
+    const res = await searchPOST(post("/api/search", { query: "sony wh-1000xm5", stream: true }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/x-ndjson");
+    const all = await events(res);
+    expect(all.filter((e) => e.type === "product")).toHaveLength(3);
+    const done = all.at(-1);
+    expect(done.type).toBe("done");
+    expect(done.products.map((p: { price: number }) => p.price)).toEqual([159.99, 248, 298]);
+    expect(done.dealCounts).toEqual({ bestbuy: 1 });
+  });
+
+  it("with stream: true, a failed search ends with a readable error event", async () => {
+    exa.search.mockRejectedValue(exaError(401, "Invalid API key"));
+    const res = await searchPOST(post("/api/search", { query: "sony wh-1000xm5", stream: true }));
+    expect(await events(res)).toEqual([{ type: "error", error: "Exa web search failed: Invalid API key" }]);
+  });
 });
 
 // ---------- /api/filter ----------
@@ -372,19 +398,20 @@ describe("POST /api/price-check", () => {
     expect((await priceCheckPOST(post("/api/price-check", "{nope"))).status).toBe(400);
   });
 
-  it("defaults the condition to Good and returns the report", async () => {
+  it("leaves the condition out unless the seller picked one, and returns the report", async () => {
     const ebay = productPage("https://www.ebay.com/itm/387000000002", "Nintendo Switch OLED White Pre-Owned", "245.00");
     installWeb({ hits: { "ebay.com": [ebay.url] }, pages: [ebay] });
     const res = await priceCheckPOST(post("/api/price-check", { item: "Nintendo Switch OLED" }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.input.condition).toBe("Good");
+    expect(json.input.condition).toBeUndefined();
     expect(json.photoUrl).toBeNull();
     expect(json.markets.map((m: { market: string }) => m.market)).toEqual(["ebay", "mercari", "facebook"]);
     expect(json.markets[2]).toMatchObject({ estimatedFrom: ["eBay"], recommended: 236.99 });
-    // No copy from Claude (null) -> fallback copy.
-    expect(json.markets[0].title).toBe("Nintendo Switch OLED - Good");
-    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED Good listing", expect.anything());
+    // No copy from Claude (null) -> fallback copy, and the condition picker stays available.
+    expect(json.markets[0].title).toBe("Nintendo Switch OLED");
+    expect(json.conditionApplies).toBe(true);
+    expect(exa.search).toHaveBeenCalledWith("Nintendo Switch OLED listing", expect.anything());
   });
 
   it("accepts multipart form data and ignores a non-image 'photo' (nothing is written)", async () => {

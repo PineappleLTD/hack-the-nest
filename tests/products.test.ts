@@ -181,7 +181,7 @@ describe("searchProducts", () => {
     await searchProducts("pokemon");
     expect(exa.search).toHaveBeenCalledTimes(6);
     for (const v of SHOP_VENDORS) {
-      expect(exa.search).toHaveBeenCalledWith("pokemon", { numResults: 15, includeDomains: [v.domain], contents: false });
+      expect(exa.search).toHaveBeenCalledWith("pokemon", { type: "lite", numResults: 15, includeDomains: [v.domain], contents: false });
     }
   });
 
@@ -191,9 +191,28 @@ describe("searchProducts", () => {
     await searchProducts("pokemon");
     const fetched = fetchedUrls();
     expect(fetched.filter((u) => NON_PRODUCT.test(u))).toEqual([]);
-    const amazonCall = exa.getContents.mock.calls.find(([urls]) => urls[0].includes("amazon.com"))!;
-    expect(amazonCall[0]).toEqual(web.amazonProducts.slice(0, 6));
+    expect(fetched.filter((u) => u.includes("amazon.com"))).toEqual(web.amazonProducts.slice(0, 6));
     expect(new Set(fetched).size).toBe(fetched.length);
+    // One page per request, so a slow page never holds up the others.
+    expect(exa.getContents.mock.calls.every(([urls]) => urls.length === 1)).toBe(true);
+  });
+
+  it("reports each product as soon as it's found, and the final list is the same products", async () => {
+    installWeb(pokemonWeb());
+    const seen: string[] = [];
+    const res = await searchProducts("pokemon", { onProduct: (p) => seen.push(p.id) });
+    expect(seen).toHaveLength(14);
+    expect(new Set(seen)).toEqual(new Set(res.map((p) => p.id)));
+  });
+
+  it("stops sending pages to Claude once the search is abandoned", async () => {
+    installWeb(pokemonWeb());
+    const abort = new AbortController();
+    abort.abort();
+    const seen: string[] = [];
+    await searchProducts("pokemon", { signal: abort.signal, onProduct: (p) => seen.push(p.id) }).catch(() => {});
+    expect(seen).toEqual([]);
+    expect(llm).not.toHaveBeenCalled();
   });
 
   it("gets broad coverage: every vendor's product pages become results, cheapest first", async () => {

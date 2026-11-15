@@ -43,43 +43,93 @@ function withTransition(update: () => void) {
   } else update();
 }
 
+type SearchEvent =
+  | { type: "product"; product: Product }
+  | { type: "done"; products: Product[] }
+  | { type: "error"; error: string };
+
+// Products stream in one by one; they're shown in small batches so rows glide in together.
+const BATCH_MS = 250;
+
 export function ShopResults({ query, onBusy }: { query: string; onBusy: (busy: boolean) => void }) {
   const [products, setProducts] = useState<Product[] | null>(null);
+  const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [deals, setDeals] = useState<Record<string, Deal[]>>({});
 
   useEffect(() => {
     const ctrl = new AbortController();
+    const found: Product[] = [];
+    let batch = 0;
+    let finished = false;
+    const show = () => {
+      batch = 0;
+      const next = [...found];
+      withTransition(() => setProducts(next));
+    };
+    const finish = (list: Product[]) => {
+      finished = true;
+      clearTimeout(batch);
+      withTransition(() => setProducts(list));
+      setDone(true);
+    };
+    const handle = (event: SearchEvent) => {
+      if (event.type === "product") {
+        found.push(event.product);
+        batch ||= window.setTimeout(show, BATCH_MS);
+      } else if (event.type === "done") finish(event.products);
+      else if (event.type === "error") throw new Error(event.error);
+    };
+
     setError(null);
     setProducts(null);
+    setDone(false);
     onBusy(true);
-    fetch("/api/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      signal: ctrl.signal,
-    })
-      .then(async (r) => {
-        const json = await r.json();
-        if (!r.ok) throw new Error(json.error ?? "Search failed");
-        setProducts(json.products);
-      })
+    (async () => {
+      const r = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, stream: true }),
+        signal: ctrl.signal,
+      });
+      if (!r.ok || !r.body) {
+        const json = await r.json().catch(() => ({}));
+        throw new Error(json.error ?? "Search failed");
+      }
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      for (;;) {
+        const { value, done: ended } = await reader.read();
+        buffered += decoder.decode(value, { stream: !ended });
+        const lines = buffered.split("\n");
+        buffered = lines.pop() ?? "";
+        for (const line of lines) if (line.trim()) handle(JSON.parse(line) as SearchEvent);
+        if (ended) break;
+      }
+      // The connection closed without a final list: keep what arrived.
+      if (!finished) finish(found);
+    })()
       .catch((e) => {
-        if (e.name !== "AbortError") setError(e.message);
+        if (e.name === "AbortError") return;
+        // Something broke partway: keep the prices already found rather than replace them with an error.
+        if (found.length) finish(found);
+        else setError(e.message);
       })
       .finally(() => {
         if (!ctrl.signal.aborted) onBusy(false);
       });
     return () => {
       ctrl.abort();
+      clearTimeout(batch);
       onBusy(false);
     };
   }, [query, reload, onBusy]);
 
-  // Deals for the stores near the top of the list, found automatically.
+  // Deals for the stores near the top of the final list, found automatically.
   useEffect(() => {
-    if (!products?.length) return;
+    if (!done || !products?.length) return;
     let live = true;
     const stores = [...new Set(products.slice(0, 6).map((p) => p.vendor))];
     lookUpDeals(stores).then((found) => {
@@ -88,10 +138,10 @@ export function ShopResults({ query, onBusy }: { query: string; onBusy: (busy: b
     return () => {
       live = false;
     };
-  }, [products]);
+  }, [products, done]);
 
   if (error) return <ErrorState message={error} onRetry={() => setReload((n) => n + 1)} />;
-  if (!products) return <ResultRowsSkeleton />;
+  if (!products || (!products.length && !done)) return <ResultRowsSkeleton />;
   if (products.length === 0)
     return (
       <EmptyState
@@ -99,12 +149,12 @@ export function ShopResults({ query, onBusy }: { query: string; onBusy: (busy: b
         body="We only list prices we can read on the store's own page. Try the exact product name, like the brand and model."
       />
     );
-  return <Results key={query} products={products} deals={deals} />;
+  return <Results key={query} products={products} deals={deals} streaming={!done} />;
 }
 
 type Row = { p: Product; applied: AppliedDeal | null; deal: Deal | null; price: number };
 
-function Results({ products, deals }: { products: Product[]; deals: Record<string, Deal[]> }) {
+function Results({ products, deals, streaming }: { products: Product[]; deals: Record<string, Deal[]>; streaming: boolean }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterText, setFilterText] = useState("");
   const [applied, setApplied] = useState<{ text: string; products: Product[] } | null>(null);
@@ -166,16 +216,19 @@ function Results({ products, deals }: { products: Product[]; deals: Record<strin
             <X className="h-3.5 w-3.5 shrink-0" />
           </button>
         )}
-        <button
-          onClick={() => setFilterOpen((o) => !o)}
-          aria-expanded={filterOpen}
-          className={`flex h-8 items-center gap-2 rounded-md px-3 text-[13px] transition-colors ${
-            filterOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          Filter
-        </button>
+        {/* Filtering waits for the full list, so it never judges a half-loaded one. */}
+        {!streaming && (
+          <button
+            onClick={() => setFilterOpen((o) => !o)}
+            aria-expanded={filterOpen}
+            className={`flex h-8 items-center gap-2 rounded-md px-3 text-[13px] transition-colors animate-in fade-in duration-300 ${
+              filterOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filter
+          </button>
+        )}
       </div>
 
       {filterOpen && (
@@ -203,10 +256,21 @@ function Results({ products, deals }: { products: Product[]; deals: Record<strin
       {rows.length === 0 ? (
         <EmptyState title="Nothing matches that filter" body="Loosen it, or clear it to see every result." />
       ) : (
-        <ul className={`border-t border-line transition-opacity ${filtering ? "opacity-50" : ""}`}>
+        <ul aria-busy={streaming} className={`border-t border-line transition-opacity ${filtering ? "opacity-50" : ""}`}>
           {rows.map((row, i) => (
             <ResultRow key={row.p.id} row={row} index={i} cheapest={i === 0} />
           ))}
+          {/* More stores are still being read. */}
+          {streaming && (
+            <li aria-hidden="true" className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-4 border-b border-line py-4 sm:grid-cols-[72px_minmax(0,1fr)_auto] sm:gap-5">
+              <div className="skeleton aspect-square rounded-md" />
+              <div className="space-y-2">
+                <div className="skeleton h-3.5 w-2/3 rounded-sm" />
+                <div className="skeleton h-3 w-1/4 rounded-sm" />
+              </div>
+              <div className="skeleton h-5 w-16 rounded-sm" />
+            </li>
+          )}
         </ul>
       )}
     </>

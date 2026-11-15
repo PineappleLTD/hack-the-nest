@@ -23,7 +23,9 @@ type Result = PriceCheck & { photoUrl: string | null };
 type Stripe = { configured: boolean; connected: boolean; detailsSubmitted: boolean };
 
 export function SellResults({ item, photo, onBusy }: { item: string; photo: File | null; onBusy: (busy: boolean) => void }) {
-  const [condition, setCondition] = useState("Good");
+  // No condition until the seller picks one; the picker only shows for things that have one.
+  const [condition, setCondition] = useState<string | null>(null);
+  const [hasCondition, setHasCondition] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -37,13 +39,14 @@ export function SellResults({ item, photo, onBusy }: { item: string; photo: File
     onBusy(true);
     const form = new FormData();
     form.set("item", item);
-    form.set("condition", condition);
+    if (condition) form.set("condition", condition);
     if (photo) form.set("photo", photo);
     fetch("/api/price-check", { method: "POST", body: form, signal: ctrl.signal })
       .then(async (r) => {
         const json = await r.json();
         if (!r.ok) throw new Error(json.error ?? "Price check failed");
         setResult(json);
+        setHasCondition(json.conditionApplies !== false);
       })
       .catch((e) => {
         if (e.name !== "AbortError") setError(e.message);
@@ -73,24 +76,27 @@ export function SellResults({ item, photo, onBusy }: { item: string; photo: File
 
   return (
     <>
-      <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
-        <span className="text-[13px] text-muted-foreground">Condition</span>
-        <div role="radiogroup" aria-label="Condition" className="flex rounded-md border border-input p-0.5">
-          {CONDITIONS.map((c) => (
-            <button
-              key={c}
-              role="radio"
-              aria-checked={condition === c}
-              onClick={() => setCondition(c)}
-              className={`h-7 rounded-sm px-2.5 text-[13px] transition-colors ${
-                condition === c ? "bg-white/10 text-foreground" : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {c}
-            </button>
-          ))}
+      {/* Only for things that have a condition (a phone or a jersey, not tortilla chips), as Claude judged the item. */}
+      {hasCondition && (
+        <div className="mb-6 flex flex-wrap items-center justify-end gap-3 animate-in fade-in duration-300">
+          <span className="text-[13px] text-muted-foreground">Condition</span>
+          <div role="radiogroup" aria-label="Condition" className="flex rounded-md border border-input p-0.5">
+            {CONDITIONS.map((c) => (
+              <button
+                key={c}
+                role="radio"
+                aria-checked={condition === c}
+                onClick={() => setCondition(c)}
+                className={`h-7 rounded-sm px-2.5 text-[13px] transition-colors ${
+                  condition === c ? "bg-white/10 text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {error && <ErrorState message={error} onRetry={() => setReload((n) => n + 1)} />}
       {!error && !result && <MarketsSkeleton />}

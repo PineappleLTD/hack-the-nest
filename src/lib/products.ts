@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { freshPages, searchUrls, type WebPage } from "./exa";
-import { mapSettled, structured } from "./llm";
+import { structured } from "./llm";
 import { SHOP_VENDORS, uniqueProductUrls, type Vendor } from "./vendors";
 
 export const CONDITIONS = ["new", "used", "refurbished", "unknown"] as const;
@@ -18,8 +18,10 @@ export type Product = {
   condition: Condition;
 };
 
+// Field order matters: the model names what kind of item the page sells before it judges the match.
 const ExtractionSchema = z.object({
   isSingleProductPage: z.boolean(),
+  itemKind: z.string(),
   matchesQuery: z.boolean(),
   title: z.string(),
   priceText: z.string().nullable(),
@@ -33,7 +35,8 @@ const EXTRACT_SYSTEM = `You extract product listing data from the text of a sing
 Rules:
 - Only report what is literally on the page. Never guess or estimate a price.
 - isSingleProductPage: true only if the page is for one specific product/listing (not a search, category, review, or list page).
-- matchesQuery: true if the product is the item the shopper searched for (or a direct variant of it). False for accessories, cases, parts, or unrelated items.
+- itemKind: what kind of item this page sells, in a few plain words (e.g. "basketball jersey", "trading card", "phone case", "wireless earbuds", "tortilla chips").
+- matchesQuery: true only if itemKind is the same kind of item the shopper searched for, and it is that item or a direct variant of it (another size, color or edition). False for a different kind of item that shares a name, player, character or brand: accessories, cases, parts, replacement pieces, or, for example, a trading card, poster or figure when the shopper searched for a jersey.
 - priceText: the exact current selling price string as it appears on the page (e.g. "$189.99"). Use the buy-box / current price, not a list/was price, shipping cost, monthly payment, or a price for a different product. null if none is clearly stated.
 - price: the numeric value of priceText (e.g. 189.99), or null.
 - currency: ISO code, e.g. "USD".
@@ -105,13 +108,22 @@ export async function extractProduct(page: WebPage, query: string, vendor: Vendo
 const URLS_PER_VENDOR = 15;
 const PAGES_PER_VENDOR = 6;
 
+export type SearchOptions = {
+  /** Called with each product as soon as its page is read and checked, before the final list is ready. */
+  onProduct?: (product: Product) => void;
+  /** Once aborted (the shopper moved on to another search), pages still arriving aren't sent to Claude. */
+  signal?: AbortSignal;
+};
+
 /**
  * Search all trusted vendors, extract grounded prices, sort cheapest first.
  * Per vendor: a cheap URL-only search, keep single product pages (search and category pages
  * never have one price), read those pages fresh (prices are never older than an hour), extract.
- * Each vendor's pages are extracted as soon as its own search returns.
+ * Each page is extracted the moment it arrives, so the first prices are ready while slower pages
+ * are still crawling; `onProduct` hears about each one. The returned list is the final word: it
+ * also drops repeats and implausible prices, which can only be judged once everything is in.
  */
-export async function searchProducts(query: string): Promise<Product[]> {
+export async function searchProducts(query: string, opts: SearchOptions = {}): Promise<Product[]> {
   const settled = await Promise.allSettled(
     SHOP_VENDORS.map(async (v) => {
       const hits = await searchUrls(query, { includeDomains: [v.domain], numResults: URLS_PER_VENDOR });
@@ -119,10 +131,24 @@ export async function searchProducts(query: string): Promise<Product[]> {
         hits.map((h) => h.url),
         v,
       ).slice(0, PAGES_PER_VENDOR);
-      const pages = urls.length ? await freshPages(urls) : [];
+      const extractions: Promise<Product | null>[] = [];
+      const pages = urls.length
+        ? await freshPages(urls, undefined, (page) => {
+            if (opts.signal?.aborted) return;
+            extractions.push(
+              extractProduct(page, query, v).then((p) => {
+                if (p && !opts.signal?.aborted) opts.onProduct?.(p);
+                return p;
+              }),
+            );
+          })
+        : [];
       // A page whose extraction fails is skipped; if all of this vendor's pages fail, the vendor fails.
-      const products = await mapSettled(pages, pages.length, (page) => extractProduct(page, query, v));
-      return { products: products.filter((p): p is Product => p !== null), pages: pages.length };
+      const results = await Promise.allSettled(extractions);
+      const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (results.length > 0 && errors.length === results.length) throw errors[0].reason;
+      const products = results.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
+      return { products, pages: pages.length };
     }),
   );
   const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");

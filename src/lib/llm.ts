@@ -38,6 +38,7 @@ export async function structured<S extends z.ZodType>(
 ): Promise<z.infer<S> | null> {
   const m = model();
   return cached<z.infer<S> | null>("llm", { name, model: m, system, user }, async () => {
+    const t0 = Date.now();
     try {
       const res = await anthropic().messages.parse({
         model: m,
@@ -48,6 +49,7 @@ export async function structured<S extends z.ZodType>(
         thinking: { type: "disabled" },
         output_config: { effort: "low", format: zodOutputFormat(schema) },
       });
+      console.log(`[llm:${name}] ${Date.now() - t0}ms in=${res.usage?.input_tokens ?? "?"} out=${res.usage?.output_tokens ?? "?"}`);
       if (res.stop_reason !== "end_turn") {
         console.error(`[llm:${name}] stop_reason=${res.stop_reason}`);
         return null;

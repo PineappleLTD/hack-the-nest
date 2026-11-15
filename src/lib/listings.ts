@@ -7,7 +7,8 @@ import { cached } from "./db";
 
 export type SellInput = {
   item: string;
-  condition: string;
+  /** Only when the seller picked one: plenty of things (food, sealed goods, tickets) have no condition. */
+  condition?: string;
   notes?: string;
 };
 
@@ -28,6 +29,8 @@ export type MarketReport = {
 export type PriceCheck = {
   input: SellInput;
   markets: MarketReport[];
+  /** Whether a used/new condition means anything for this kind of item, as judged by Claude. */
+  conditionApplies: boolean;
   ebayEnabled: boolean;
   stripeEnabled: boolean;
 };
@@ -62,6 +65,7 @@ export function recommendPrice(prices: number[]): number | null {
 }
 
 const ListingCopySchema = z.object({
+  conditionApplies: z.boolean(),
   listings: z.array(
     z.object({
       market: z.enum(RESALE_MARKETS.map((m) => m.id) as [string, ...string[]]),
@@ -72,6 +76,8 @@ const ListingCopySchema = z.object({
 });
 
 const COPY_SYSTEM = `You write resale listings. Write one listing per marketplace requested.
+- conditionApplies: true if buyers of this kind of item care whether it's new, used or worn (electronics, clothing, shoes, furniture, tools, collectibles, games, instruments). False if condition isn't a thing for it: food, drinks, consumables, cosmetics, sealed-only goods, tickets, gift cards, digital items.
+- Mention a condition only if the seller gave one and conditionApplies is true. Otherwise leave condition out entirely: don't assume one, and don't say it's unspecified.
 - Only state facts the seller gave you. Never invent specs, accessories, battery health, or history.
 - eBay: title max 80 characters, keyword-rich (brand, model, capacity, color, condition). Description: short intro, bulleted details, condition notes, "Ships quickly" line.
 - Mercari: title max 40 characters. Friendly, concise description with bullets.
@@ -85,19 +91,19 @@ async function writeListings(input: SellInput) {
     COPY_SYSTEM,
     `Marketplaces: ${RESALE_MARKETS.map((m) => `${m.id} (${m.name})`).join(", ")}
 Item: ${input.item}
-Condition: ${input.condition}
+Condition: ${input.condition || "(not given)"}
 Seller notes: ${input.notes?.trim() || "(none)"}`,
   );
 }
 
 function fallbackCopy(input: SellInput) {
-  const title = `${input.item} - ${input.condition}`.slice(0, 80);
-  const description = [`${input.item}`, `Condition: ${input.condition}`, input.notes?.trim()].filter(Boolean).join("\n");
+  const title = (input.condition ? `${input.item} - ${input.condition}` : input.item).slice(0, 80);
+  const description = [`${input.item}`, input.condition && `Condition: ${input.condition}`, input.notes?.trim()].filter(Boolean).join("\n");
   return { title, description };
 }
 
 async function findComps(input: SellInput, marketId: string): Promise<Product[]> {
-  const query = MARKET_QUERY[marketId](`${input.item} ${input.condition}`);
+  const query = MARKET_QUERY[marketId](input.condition ? `${input.item} ${input.condition}` : input.item);
   const market = vendorById(marketId)!;
   // Exa errors propagate so priceCheck can tell "no comps" apart from "search is broken".
   // Same flow as Shop: URLs first, keep single listing pages, read them fresh so comps are current.
@@ -113,9 +119,9 @@ async function findComps(input: SellInput, marketId: string): Promise<Product[]>
 }
 
 export async function priceCheck(input: SellInput): Promise<PriceCheck> {
-  const key = { item: input.item.trim().toLowerCase(), condition: input.condition, notes: input.notes?.trim() ?? "" };
-  const markets = await cached(
-    "price-check-v3",
+  const key = { item: input.item.trim().toLowerCase(), condition: input.condition ?? "", notes: input.notes?.trim() ?? "" };
+  const { markets, conditionApplies } = await cached(
+    "price-check-v4",
     key,
     async () => {
       if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set");
@@ -128,7 +134,7 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
       const failed = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
       failed.forEach((f) => console.error("[price-check]", f.reason instanceof Error ? f.reason.message : f.reason));
       if (failed.length && compsByMarket.every((c) => c.length === 0)) throw failed[0].reason;
-      return RESALE_MARKETS.map((m, i): MarketReport => {
+      const markets = RESALE_MARKETS.map((m, i): MarketReport => {
         const comps = compsByMarket[i];
         const prices = comps.map((c) => c.price);
         const c = copy?.listings.find((l) => l.market === m.id) ?? fallbackCopy(input);
@@ -149,14 +155,17 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
           description: c.description,
         };
       });
+      // If Claude couldn't say, offer the condition picker rather than hide a choice that may matter.
+      return { markets, conditionApplies: copy?.conditionApplies ?? true };
     },
-    (ms) => ms.some((m) => m.comps.length > 0),
+    (r) => r.markets.some((m) => m.comps.length > 0),
     // Comps are live prices: only reuse a report briefly (e.g. reopening the same item).
     10 * 60 * 1000,
   );
   return {
     input,
     markets,
+    conditionApplies,
     ebayEnabled: Boolean(process.env.EBAY_OAUTH_TOKEN),
     stripeEnabled: Boolean(process.env.STRIPE_SECRET_KEY),
   };
