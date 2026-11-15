@@ -135,14 +135,10 @@ function Results({ query, products, dealCounts }: { query: string; products: Pro
   }
 
   const shown = applied?.products ?? products;
-  const vendors = new Set(shown.map((p) => p.vendor)).size;
 
   return (
     <>
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <p className="text-sm text-stone-500">
-          <span className="font-medium text-stone-900">{shown.length}</span> results from {vendors} store{vendors === 1 ? "" : "s"} · lowest price first
-        </p>
         <div className="ml-auto flex items-center gap-2">
           {applied && (
             <button
