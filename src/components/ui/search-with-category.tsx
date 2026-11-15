@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils"
 export type SearchMode = "shop" | "sell"
 
 const PLACEHOLDER: Record<SearchMode, string> = {
-  shop: "What are you shopping for?",
+  shop: "Search for a product",
   sell: "What are you selling?",
 }
 
@@ -73,7 +73,7 @@ export default function SearchWithCategory({
         <Select value={mode} onValueChange={(v) => onModeChange(v as SearchMode)}>
           <SelectTrigger
             aria-label="Shop or sell"
-            className="h-full w-[104px] shrink-0 rounded-none border-0 border-r border-input bg-transparent pl-4 pr-3 text-[15px] font-medium text-foreground ring-offset-0 focus:ring-0 focus-visible:bg-white/5"
+            className="h-full w-[88px] shrink-0 rounded-none border-0 border-r border-input bg-transparent pl-3.5 pr-2.5 text-[15px] sm:w-[104px] sm:pl-4 sm:pr-3 font-medium text-foreground ring-offset-0 focus:ring-0 focus-visible:bg-white/5"
           >
             <SelectValue />
           </SelectTrigger>
@@ -93,7 +93,7 @@ export default function SearchWithCategory({
           autoFocus={autoFocus}
           autoComplete="off"
           spellCheck={false}
-          className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent px-4 text-[17px] shadow-none ring-offset-0 focus-visible:outline-none focus-visible:ring-0"
+          className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent px-3 text-base sm:px-4 sm:text-[17px] shadow-none ring-offset-0 focus-visible:outline-none focus-visible:ring-0"
         />
 
         {/* Sell: optional photo */}

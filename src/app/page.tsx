@@ -35,6 +35,8 @@ function Home() {
   const [photo, setPhoto] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const active = query !== "";
+  // Sell shows three marketplaces side by side, so it gets the wider column; the bar matches it.
+  const width = !active ? "max-w-2xl" : urlMode === "sell" ? "max-w-5xl" : "max-w-3xl";
 
   const run = useCallback((q: string, m: SearchMode) => router.replace(href(q, m), { scroll: false }), [router]);
 
@@ -74,7 +76,7 @@ function Home() {
         </div>
 
         <div
-          className={`sticky top-3 z-30 w-full transition-[max-width] duration-700 ease-out-expo ${active ? "max-w-3xl" : "max-w-2xl"}`}
+          className={`sticky top-3 z-30 w-full transition-[max-width] duration-700 ease-out-expo ${width}`}
         >
           <SearchWithCategory
             mode={mode}
@@ -97,7 +99,7 @@ function Home() {
       </section>
 
       {active && (
-        <div className="mx-auto mt-6 max-w-3xl">
+        <div className={`mx-auto mt-6 ${width}`}>
           {urlMode === "shop" ? (
             <ShopResults key={query} query={query} onBusy={setBusy} />
           ) : (

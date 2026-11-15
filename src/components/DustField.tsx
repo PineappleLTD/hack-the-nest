@@ -226,5 +226,5 @@ export function DustField({ dim = false, stir = false }: { dim?: boolean; stir?:
     };
   }, []);
 
-  return <div ref={hostRef} aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 bg-black" />;
+  return <div ref={hostRef} aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 bg-black" />;
 }

@@ -191,11 +191,12 @@ function Market({ m, result, index }: { m: MarketReport; result: Result; index: 
       )}
 
       <div className="mt-6 grid gap-1">
-        <input
+        <textarea
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
+          rows={2}
           aria-label={`Listing title for ${m.marketName}`}
-          className="-mx-2 rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[15px] font-medium text-foreground outline-none transition-colors hover:border-input focus:border-brand/70"
+          className="-mx-2 resize-none rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[15px] font-medium leading-snug text-foreground outline-none transition-colors hover:border-input focus:border-brand/70"
         />
         <textarea
           value={description}
