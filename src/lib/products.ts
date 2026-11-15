@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { webSearch, type WebPage } from "./exa";
-import { mapLimit, tryStructured } from "./llm";
+import { mapSettled, structured } from "./llm";
 import { SHOP_VENDORS, vendorForUrl, type Vendor } from "./vendors";
 
 export const CONDITIONS = ["new", "used", "refurbished", "unknown"] as const;
@@ -54,8 +54,9 @@ export function priceIsGrounded(text: string, priceText: string | null, price: n
   return Number.isFinite(n) && Math.abs(n - price) < 0.01;
 }
 
+/** Throws on LLM/API errors; returns null when the page isn't a grounded, priced match. */
 export async function extractProduct(page: WebPage, query: string, vendor: Vendor): Promise<Product | null> {
-  const data = await tryStructured(
+  const data = await structured(
     "product_extraction",
     ExtractionSchema,
     EXTRACT_SYSTEM,
@@ -102,7 +103,8 @@ export async function searchProducts(query: string): Promise<Product[]> {
     pages.push({ page, vendor });
   }
 
-  const products = await mapLimit(pages, 10, ({ page, vendor }) => extractProduct(page, query, vendor));
+  // A page whose extraction fails is skipped; if every page fails (bad key, outage) the error surfaces.
+  const products = await mapSettled(pages, 10, ({ page, vendor }) => extractProduct(page, query, vendor));
   return products.filter((p): p is Product => p !== null).sort((a, b) => a.price - b.price);
 }
 
@@ -113,30 +115,45 @@ export const FilterSpecSchema = z.object({
   minPrice: z.number().nullable(),
   vendors: z.array(z.enum(SHOP_VENDORS.map((v) => v.id) as [string, ...string[]])),
   conditions: z.array(z.enum(CONDITIONS)),
-  mustInclude: z.array(z.string()),
-  mustExclude: z.array(z.string()),
+  exclude: z.array(z.number()),
 });
 export type FilterSpec = z.infer<typeof FilterSpecSchema>;
 
-export const FILTER_SYSTEM = `Convert a shopper's plain-English refinement into a filter spec.
-- maxPrice / minPrice: numbers in USD, or null if not mentioned. "under $200" -> maxPrice 200.
-- vendors: vendor ids to KEEP, chosen from: ${SHOP_VENDORS.map((v) => `${v.id} (${v.name})`).join(", ")}. Empty array = all vendors.
+export const FILTER_SYSTEM = `You apply a shopper's plain-English refinement to a numbered list of search results.
+Return:
+- maxPrice / minPrice: USD bounds the shopper stated, or null. "under $200" -> maxPrice 200.
+- vendors: store ids to KEEP, chosen from: ${SHOP_VENDORS.map((v) => `${v.id} (${v.name})`).join(", ")}. Empty array = all stores.
 - conditions: conditions to KEEP from new, used, refurbished, unknown. Empty = all. "new only" -> ["new"].
-- mustInclude: words/phrases that must appear in the product title (e.g. a color, size, model). Empty if none.
-- mustExclude: words/phrases that must NOT appear in the title. Empty if none.
-Only include constraints the shopper actually stated.`;
+- exclude: the numbers of results that fail any OTHER part of the request (model, size, capacity, color, bundle or not, brand, edition, etc.), judged from the title. Don't repeat price/store/condition here; those fields cover them. Empty if the request has no other criteria.
+Only apply constraints the shopper actually stated. If a title doesn't say whether it matches a criterion, keep it.`;
+
+const MAX_FILTER_PRODUCTS = 120;
+
+function filterPrompt(text: string, products: Product[]): string {
+  const lines = products.map((p, i) => `${i}. ${p.title} | $${p.price.toFixed(2)} | ${p.vendorName} | ${p.condition}`);
+  return `Refinement: ${text}\n\nResults:\n${lines.join("\n")}`;
+}
 
 export function applyFilter(products: Product[], spec: FilterSpec): Product[] {
-  const inc = spec.mustInclude.map((s) => s.toLowerCase());
-  const exc = spec.mustExclude.map((s) => s.toLowerCase());
-  return products.filter((p) => {
+  const exclude = new Set(spec.exclude);
+  return products.filter((p, i) => {
+    if (exclude.has(i)) return false;
     if (spec.maxPrice != null && p.price > spec.maxPrice) return false;
     if (spec.minPrice != null && p.price < spec.minPrice) return false;
     if (spec.vendors.length && !spec.vendors.includes(p.vendor)) return false;
     if (spec.conditions.length && !spec.conditions.includes(p.condition)) return false;
-    const t = p.title.toLowerCase();
-    if (inc.some((w) => !t.includes(w))) return false;
-    if (exc.some((w) => t.includes(w))) return false;
     return true;
   });
+}
+
+/**
+ * The only agent step in Shop, and it runs only when the shopper asks for a filter.
+ * Hard constraints (price, store, condition) are applied in code; Claude flags the
+ * results that fail anything else. Order (cheapest first) is preserved.
+ */
+export async function filterProducts(text: string, products: Product[]): Promise<{ spec: FilterSpec; products: Product[] } | null> {
+  const list = products.slice(0, MAX_FILTER_PRODUCTS);
+  const spec = await structured("filter_spec", FilterSpecSchema, FILTER_SYSTEM, filterPrompt(text, list));
+  if (!spec) return null;
+  return { spec, products: applyFilter(list, spec) };
 }

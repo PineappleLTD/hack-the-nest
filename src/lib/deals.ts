@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { db, hashKey } from "./db";
 import { webSearch, type WebPage } from "./exa";
-import { mapLimit, tryStructured } from "./llm";
+import { mapSettled, structured } from "./llm";
 import { hostOf, SHOP_VENDORS, storeKey } from "./vendors";
 
 export type Deal = {
@@ -61,6 +61,9 @@ function rowToDeal(r: Record<string, unknown>): Deal {
 
 const ACTIVE = `(expires_at IS NULL OR expires_at >= ?)`;
 
+/** Deals change daily; re-search the web after this long instead of serving cached pages forever. */
+const DEAL_SEARCH_MAX_AGE = 12 * 3600 * 1000;
+
 export function dealsForStore(key: string): Deal[] {
   return (
     db
@@ -84,8 +87,9 @@ function grounded(text: string, d: z.infer<typeof DealsSchema>["deals"][number])
   return hay.includes(d.discountText.toLowerCase().replace(/\s+/g, " "));
 }
 
+/** Throws on LLM/API errors; returns [] when the page has no grounded deals. */
 async function extractDeals(page: WebPage, query: string) {
-  const data = await tryStructured(
+  const data = await structured(
     "deal_extraction",
     DealsSchema,
     DEALS_SYSTEM,
@@ -109,13 +113,18 @@ const insert = db.prepare(`INSERT OR IGNORE INTO deals
 
 /** Search the web for deals, store any grounded ones, return active deals for this query/store. */
 export async function findDeals(query: string): Promise<Deal[]> {
-  const since = new Date(Date.now() - 45 * 24 * 3600 * 1000).toISOString();
-  const [couponPages, promoPages] = await Promise.all([
-    webSearch(`${query} promo codes coupons this month`, { numResults: 8, maxCharacters: 8000, startPublishedDate: since }),
-    webSearch(`${query} current sale deals discounts`, { numResults: 6, maxCharacters: 8000 }),
+  // Day precision so the Exa cache key is stable within a day (a millisecond timestamp never hits the cache).
+  const since = new Date(Date.now() - 45 * 24 * 3600 * 1000).toISOString().slice(0, 10) + "T00:00:00.000Z";
+  const settled = await Promise.allSettled([
+    webSearch(`${query} promo codes coupons this month`, { numResults: 8, maxCharacters: 8000, startPublishedDate: since, maxAgeMs: DEAL_SEARCH_MAX_AGE }),
+    webSearch(`${query} current sale deals discounts`, { numResults: 6, maxCharacters: 8000, maxAgeMs: DEAL_SEARCH_MAX_AGE }),
   ]);
-  const pages = [...new Map([...couponPages, ...promoPages].map((p) => [p.url, p])).values()];
-  const extracted = (await mapLimit(pages, 8, (p) => extractDeals(p, query))).flat();
+  const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
+  failures.forEach((f) => console.error("[deals]", f.reason instanceof Error ? f.reason.message : f.reason));
+  if (failures.length === settled.length) throw failures[0].reason;
+  const found = settled.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
+  const pages = [...new Map(found.map((p) => [p.url, p])).values()];
+  const extracted = (await mapSettled(pages, 8, (p) => extractDeals(p, query))).flatMap((d) => d ?? []);
 
   const now = Date.now();
   const ids: string[] = [];

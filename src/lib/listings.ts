@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { webSearch } from "./exa";
-import { mapLimit, tryStructured } from "./llm";
+import { mapSettled, tryStructured } from "./llm";
 import { extractProduct, type Product } from "./products";
 import { RESALE_MARKETS, vendorForUrl } from "./vendors";
 import { cached } from "./db";
@@ -96,13 +96,10 @@ function fallbackCopy(input: SellInput) {
 
 async function findComps(input: SellInput, marketId: string): Promise<Product[]> {
   const query = MARKET_QUERY[marketId](`${input.item} ${input.condition}`);
-  const pages = await webSearch(query, { includeDomains: MARKET_DOMAINS[marketId], numResults: 10, maxCharacters: 5000 }).catch(
-    (e) => {
-      console.error(`[comps:${marketId}]`, e instanceof Error ? e.message : e);
-      return [];
-    },
-  );
-  const results = await mapLimit(pages, 8, async (page) => {
+  // Exa errors propagate so priceCheck can tell "no comps" apart from "search is broken".
+  const pages = await webSearch(query, { includeDomains: MARKET_DOMAINS[marketId], numResults: 10, maxCharacters: 5000 });
+  // Throws only if every page's extraction failed (bad key, outage); priceCheck decides whether to surface it.
+  const results = await mapSettled(pages, 8, async (page) => {
     const vendor = vendorForUrl(page.url);
     if (!vendor || vendor.id !== marketId) return null;
     return extractProduct(page, input.item, vendor);
@@ -117,10 +114,15 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
     key,
     async () => {
       if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set");
-      const [compsByMarket, copy] = await Promise.all([
-        Promise.all(RESALE_MARKETS.map((m) => findComps(input, m.id))),
+      const [settled, copy] = await Promise.all([
+        Promise.allSettled(RESALE_MARKETS.map((m) => findComps(input, m.id))),
         writeListings(input),
       ]);
+      const compsByMarket = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
+      // A market that fails just shows no comps, unless nothing worked anywhere: then report the error.
+      const failed = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
+      failed.forEach((f) => console.error("[price-check]", f.reason instanceof Error ? f.reason.message : f.reason));
+      if (failed.length && compsByMarket.every((c) => c.length === 0)) throw failed[0].reason;
       return RESALE_MARKETS.map((m, i): MarketReport => {
         const comps = compsByMarket[i];
         const prices = comps.map((c) => c.price);

@@ -1,14 +1,16 @@
+import { NotConfiguredError } from "./http";
+
 /** Create a Stripe Payment Link for a one-off item via the REST API (no SDK needed). */
 async function stripe<T>(path: string, params: Record<string, string>): Promise<T> {
   const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+  if (!key) throw new NotConfiguredError("Stripe isn't connected: add your Stripe secret key as STRIPE_SECRET_KEY in .env");
   const res = await fetch(`https://api.stripe.com/v1${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`Stripe: ${json?.error?.message ?? res.status}`);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Stripe: ${json?.error?.message ?? `HTTP ${res.status}`}`);
   return json as T;
 }
 

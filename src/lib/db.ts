@@ -48,17 +48,30 @@ export function hashKey(parts: unknown): string {
 /**
  * Read-through cache. `fn` only runs on a miss; its result is stored as JSON.
  * Pass `shouldCache` to skip storing empty/failed results.
+ * Pass `maxAgeMs` to refresh entries older than that; if the refresh throws, the stale value is returned.
  */
 export async function cached<T>(
   namespace: string,
   keyParts: unknown,
   fn: () => Promise<T>,
   shouldCache: (v: T) => boolean = () => true,
+  maxAgeMs?: number,
 ): Promise<T> {
   const key = `${namespace}:${hashKey(keyParts)}`;
-  const row = db.prepare("SELECT value FROM cache WHERE key = ?").get(key) as { value: string } | undefined;
-  if (row) return JSON.parse(row.value) as T;
-  const value = await fn();
+  const row = db.prepare("SELECT value, created_at FROM cache WHERE key = ?").get(key) as
+    | { value: string; created_at: number }
+    | undefined;
+  if (row && (maxAgeMs == null || Date.now() - row.created_at < maxAgeMs)) return JSON.parse(row.value) as T;
+  let value: T;
+  try {
+    value = await fn();
+  } catch (err) {
+    if (row) {
+      console.error(`[cache:${namespace}] refresh failed, serving stale entry`, err instanceof Error ? err.message : err);
+      return JSON.parse(row.value) as T;
+    }
+    throw err;
+  }
   if (shouldCache(value)) {
     db.prepare("INSERT OR REPLACE INTO cache (key, namespace, value, created_at) VALUES (?, ?, ?, ?)").run(
       key,

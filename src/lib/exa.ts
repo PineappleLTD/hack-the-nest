@@ -20,6 +20,8 @@ export type WebSearchOptions = {
   numResults?: number;
   maxCharacters?: number;
   startPublishedDate?: string;
+  /** Re-fetch cached results older than this (stale results are served if the re-fetch fails). */
+  maxAgeMs?: number;
 };
 
 /** Exa search with page text, cached in SQLite by query + options. */
@@ -40,6 +42,8 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
         ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
         contents: { text: { maxCharacters: options.maxCharacters } },
       });
+      const cost = (res as { costDollars?: { total?: number } }).costDollars?.total;
+      console.log(`[exa] ${cost != null ? `$${cost.toFixed(4)}` : "cost n/a"} ${JSON.stringify(query)} ${options.includeDomains?.join(",") ?? ""}`);
       return res.results
         .filter((r) => typeof r.text === "string" && r.text.length > 0)
         .map((r) => ({
@@ -51,5 +55,6 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
         }));
     },
     (pages) => pages.length > 0,
+    opts.maxAgeMs,
   );
 }
