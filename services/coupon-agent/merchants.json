@@ -1,0 +1,6 @@
+[
+  {"name": "Amazon", "domain": "amazon.com", "timezone": "America/Detroit"},
+  {"name": "eBay", "domain": "ebay.com", "timezone": "America/Detroit"},
+  {"name": "Best Buy", "domain": "bestbuy.com", "timezone": "America/Detroit"},
+  {"name": "Etsy", "domain": "etsy.com", "timezone": "America/Detroit"}
+]

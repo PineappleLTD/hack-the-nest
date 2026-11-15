@@ -60,3 +60,7 @@ Every Exa query and LLM extraction is cached in SQLite (`data/agent-shop.db`), k
 - **eBay posting needs a fully set-up seller account** (business policies and an inventory location) and at least one public `https` photo URL. A locally uploaded photo isn't public when running on localhost.
 - **Prices are whatever the indexed page said when it was crawled**, so they can lag the live site. Every result links to its source so you can check.
 - **USD only.**
+
+## Optional LangChain coupon service
+
+See the [coupon service setup](services/coupon-agent/README.md) for daily merchant refresh, SQLite inventory, and natural-language coupon lookup. The existing Deals page uses its current API; the Python service runs separately.
