@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { CartMark } from "./CartMark";
 
 const LINKS = [
   { href: "/", label: "Shop" },
@@ -12,9 +13,10 @@ const LINKS = [
 export function Nav() {
   const pathname = usePathname();
   return (
-    <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5 sm:px-6">
-      <Link href="/" className="font-serif text-2xl tracking-tight">
-        Agent Shop
+    <header className="relative z-20 mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-5 sm:px-6">
+      <Link href="/" className="group flex items-center gap-2.5 rounded-sm text-[17px] font-semibold tracking-[-0.02em] text-foreground">
+        <CartMark className="h-[22px] w-[26px] text-foreground transition-transform duration-500 ease-out-expo group-hover:translate-x-[3px]" />
+        agent shop
       </Link>
       <nav className="flex items-center gap-1 text-sm">
         {LINKS.map((l) => {
@@ -23,9 +25,8 @@ export function Nav() {
             <Link
               key={l.href}
               href={l.href}
-              className={`rounded-full px-3.5 py-1.5 transition-colors ${
-                active ? "bg-stone-900 text-stone-50" : "text-stone-600 hover:bg-stone-200/60 hover:text-stone-900"
-              }`}
+              aria-current={active ? "page" : undefined}
+              className={`rounded-sm px-3 py-1.5 transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               {l.label}
             </Link>

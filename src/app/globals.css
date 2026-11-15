@@ -1,58 +1,139 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
+/* One world: black ground, white text at two strengths, one orange. */
 :root {
-  --background: #faf9f7;
-  --foreground: #1c1917;
+  --background: #000000;
+  --foreground: #ededeb;
+  --muted-foreground: #8f8f8a;
+  --faint: #5e5e5a;
+  --line: #232322;
+  --border: #232322;
+  --input: #2e2e2c;
+  --ring: #ff5a1f;
+  --brand: #ff5a1f;
+  --primary: #ff5a1f;
+  --primary-foreground: #000000;
+  --secondary: #1a1a19;
+  --secondary-foreground: #ededeb;
+  --popover: #121211;
+  --popover-foreground: #ededeb;
+  --accent: #1f1f1d;
+  --accent-foreground: #ededeb;
+  --muted: #1a1a19;
+  --destructive: #ff6a5c;
+  --destructive-foreground: #000000;
+  --well: #f2f2ef;
+  --radius: 6px;
+  color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-instrument-serif);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-well: var(--well);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    background: var(--background);
+    scrollbar-color: #2e2e2c transparent;
+    scrollbar-width: thin;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+  }
+  input,
+  textarea {
+    caret-color: var(--brand);
+  }
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--brand);
+    color: #000;
+  }
 }
 
-::selection {
-  background: #1c1917;
-  color: #faf9f7;
+/* The cart mark's weave drifts one step at a time; faster while a search runs. */
+@keyframes weave {
+  to {
+    transform: translateX(18px);
+  }
+}
+.cart-weave {
+  animation: weave 4.5s linear infinite;
+}
+html[data-busy] .cart-weave {
+  animation-duration: 0.7s;
 }
 
+/* Loading placeholders: a slow sheen across dark blocks. */
 @keyframes shimmer {
   100% {
     transform: translateX(100%);
   }
 }
-
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: #efece8;
+  background: #141413;
 }
 .skeleton::after {
   content: "";
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
-  animation: shimmer 1.4s infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: shimmer 1.6s infinite;
 }
 
-@keyframes fade-up {
+/* Results arriving: each row rises into place, staggered by price order. */
+@keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
+    transform: translateY(8px);
   }
 }
-.fade-up {
-  animation: fade-up 0.35s ease-out both;
+.rise {
+  animation: rise 0.5s var(--ease-out-expo) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
