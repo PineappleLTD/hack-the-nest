@@ -2,7 +2,7 @@ import { z } from "zod";
 import { db, hashKey } from "./db";
 import { webSearch, type WebPage } from "./exa";
 import { mapSettled, structured } from "./llm";
-import { hostOf, isFirstPartySource, MARKETPLACE_IDS, SHOP_VENDORS, storeKey } from "./vendors";
+import { hostOf, isFirstPartySource, MARKETPLACE_IDS, SHOP_VENDORS, siteOf, storeKey } from "./vendors";
 
 export type Deal = {
   id: string;
@@ -103,30 +103,33 @@ export function dealsForStore(key: string): Deal[] {
  * Deals worth showing next to a store's results: store-wide (sitewide or category, not tied to one
  * product) and verifiable. That means published on the store's own site, or, for codes at stores
  * that aren't marketplaces, the same code listed by at least two independent sites. A code on one
- * coupon site alone is usually SEO filler that never worked. One row per code.
+ * coupon site alone is usually SEO filler that never worked. Subdomains of one site (daily.slickdeals.net,
+ * slickdeals.net) count as one. One row per code, preferring the store's own listing of it, which is
+ * the only kind applied to prices automatically.
  */
 export function storeWideDeals(key: string): Deal[] {
   const all = dealsForStore(key);
-  const hostsByCode = new Map<string, Set<string>>();
+  const sitesByCode = new Map<string, Set<string>>();
   for (const d of all) {
     if (!d.code) continue;
     const c = d.code.toUpperCase();
-    if (!hostsByCode.has(c)) hostsByCode.set(c, new Set());
-    hostsByCode.get(c)!.add(d.sourceHost);
+    if (!sitesByCode.has(c)) sitesByCode.set(c, new Set());
+    sitesByCode.get(c)!.add(siteOf(d.sourceHost));
   }
-  const seenCodes = new Set<string>();
-  return all.filter((d) => {
+  const firstParty = (d: Deal) => isFirstPartySource(key, d.sourceHost);
+  const shown = all.filter((d) => {
     if (d.scope !== "sitewide" && d.scope !== "category") return false;
-    const firstParty = isFirstPartySource(key, d.sourceHost);
-    const corroborated = !!d.code && !MARKETPLACE_IDS.has(key) && (hostsByCode.get(d.code.toUpperCase())?.size ?? 0) >= 2;
-    if (!firstParty && !corroborated) return false;
-    if (d.code) {
-      const c = d.code.toUpperCase();
-      if (seenCodes.has(c)) return false;
-      seenCodes.add(c);
-    }
-    return true;
+    const corroborated = !!d.code && !MARKETPLACE_IDS.has(key) && (sitesByCode.get(d.code.toUpperCase())?.size ?? 0) >= 2;
+    return firstParty(d) || corroborated;
   });
+  const pick = new Map<string, Deal>();
+  for (const d of shown) {
+    if (!d.code) continue;
+    const c = d.code.toUpperCase();
+    const cur = pick.get(c);
+    if (!cur || (!firstParty(cur) && firstParty(d))) pick.set(c, d);
+  }
+  return shown.filter((d) => !d.code || pick.get(d.code.toUpperCase()) === d);
 }
 
 /** Verifiable store-wide deal counts for each shop vendor id, for search-result badges. */
@@ -143,12 +146,18 @@ function grounded(text: string, d: z.infer<typeof DealsSchema>["deals"][number])
 }
 
 /** Throws on LLM/API errors; returns [] when the page has no grounded deals. */
-/** Keep a number only if it is literally in the text (e.g. 20 -> "20%", 10 -> "$10"). */
+/**
+ * Keep a number only if it is literally in the text as a whole amount (20 -> "20%", 10 -> "$10"),
+ * never as part of a longer one ("$25" is not in "$250", "20%" is not in "120%").
+ */
 function groundedNumber(n: number | null, text: string, kind: "percent" | "dollars"): number | null {
   if (n == null || !Number.isFinite(n) || n <= 0) return null;
-  const t = text.replace(/,/g, "").replace(/\s+/g, "");
-  const forms = [String(n), n.toFixed(2)];
-  const ok = forms.some((f) => (kind === "percent" ? t.includes(`${f}%`) : t.includes(`$${f}`)));
+  const t = text.replace(/(\d),(?=\d{3})/g, "$1").replace(/\s+/g, " ");
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const forms = [...new Set([String(n), n.toFixed(2)])];
+  const ok = forms.some((f) =>
+    (kind === "percent" ? new RegExp(`(?<![\\d.])${esc(f)} ?%`) : new RegExp(`\\$ ?${esc(f)}(?!\\d|[.,]\\d)`)).test(t),
+  );
   return ok ? n : null;
 }
 

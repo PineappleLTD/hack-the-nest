@@ -2,7 +2,7 @@ import { z } from "zod";
 import { freshPages, searchUrls } from "./exa";
 import { mapSettled, tryStructured } from "./llm";
 import { extractProduct, type Product } from "./products";
-import { isProductPage, RESALE_MARKETS, vendorById, vendorForUrl } from "./vendors";
+import { RESALE_MARKETS, uniqueProductUrls, vendorById } from "./vendors";
 import { cached } from "./db";
 
 export type SellInput = {
@@ -102,9 +102,10 @@ async function findComps(input: SellInput, marketId: string): Promise<Product[]>
   // Exa errors propagate so priceCheck can tell "no comps" apart from "search is broken".
   // Same flow as Shop: URLs first, keep single listing pages, read them fresh so comps are current.
   const hits = await searchUrls(query, { includeDomains: MARKET_DOMAINS[marketId], numResults: 15 });
-  const urls = [...new Set(hits.map((h) => h.url))]
-    .filter((u) => vendorForUrl(u)?.id === marketId && isProductPage(u, market))
-    .slice(0, 8);
+  const urls = uniqueProductUrls(
+    hits.map((h) => h.url),
+    market,
+  ).slice(0, 8);
   const pages = urls.length ? await freshPages(urls, 5000) : [];
   // Throws only if every page's extraction failed (bad key, outage); priceCheck decides whether to surface it.
   const results = await mapSettled(pages, 8, (page) => extractProduct(page, input.item, market));

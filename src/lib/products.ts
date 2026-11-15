@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { freshPages, searchUrls, type WebPage } from "./exa";
 import { mapSettled, structured } from "./llm";
-import { isProductPage, SHOP_VENDORS, vendorForUrl, type Vendor } from "./vendors";
+import { SHOP_VENDORS, uniqueProductUrls, type Vendor } from "./vendors";
 
 export const CONDITIONS = ["new", "used", "refurbished", "unknown"] as const;
 export type Condition = (typeof CONDITIONS)[number];
@@ -45,10 +45,28 @@ function normalizeSpaces(s: string) {
   return s.replace(/\s+/g, " ");
 }
 
+/**
+ * True if `quote` appears in `text` as a whole amount, not as part of a longer number:
+ * "$14" is not in "$149.99", "$1" is not in "$1,299", "49.99" is not in "149.99".
+ */
+export function containsAmount(text: string, quote: string): boolean {
+  if (!quote) return false;
+  const startsWithDigit = /^\d/.test(quote);
+  const endsWithDigit = /\d$/.test(quote);
+  for (let i = text.indexOf(quote); i !== -1; i = text.indexOf(quote, i + 1)) {
+    const before = text[i - 1] ?? "";
+    const after = text.slice(i + quote.length, i + quote.length + 2);
+    if (startsWithDigit && /[\d.,]/.test(before)) continue;
+    if (endsWithDigit && /^(\d|[.,]\d)/.test(after)) continue;
+    return true;
+  }
+  return false;
+}
+
 /** Guard against hallucination: the quoted price must appear on the page and agree with the number. */
 export function priceIsGrounded(text: string, priceText: string | null, price: number | null): price is number {
   if (!priceText || price == null || !Number.isFinite(price) || price <= 0) return false;
-  if (!normalizeSpaces(text).includes(normalizeSpaces(priceText.trim()))) return false;
+  if (!containsAmount(normalizeSpaces(text), normalizeSpaces(priceText.trim()))) return false;
   const digits = priceText.replace(/[^0-9.]/g, "");
   const n = parseFloat(digits);
   return Number.isFinite(n) && Math.abs(n - price) < 0.01;
@@ -97,9 +115,10 @@ export async function searchProducts(query: string): Promise<Product[]> {
   const settled = await Promise.allSettled(
     SHOP_VENDORS.map(async (v) => {
       const hits = await searchUrls(query, { includeDomains: [v.domain], numResults: URLS_PER_VENDOR });
-      const urls = [...new Set(hits.map((h) => h.url))]
-        .filter((u) => vendorForUrl(u)?.id === v.id && isProductPage(u, v))
-        .slice(0, PAGES_PER_VENDOR);
+      const urls = uniqueProductUrls(
+        hits.map((h) => h.url),
+        v,
+      ).slice(0, PAGES_PER_VENDOR);
       const pages = urls.length ? await freshPages(urls) : [];
       // A page whose extraction fails is skipped; if all of this vendor's pages fail, the vendor fails.
       const products = await mapSettled(pages, pages.length, (page) => extractProduct(page, query, v));
@@ -112,7 +131,21 @@ export async function searchProducts(query: string): Promise<Product[]> {
   const products = ok.flatMap((r) => r.products);
   // Nothing found and no vendor got as far as reading pages: that's an outage or a bad key, not "no results".
   if (!products.length && failures.length && !ok.some((r) => r.pages > 0)) throw failures[0].reason;
-  return dropImplausible(products).sort((a, b) => a.price - b.price);
+  return dropRepeats(dropImplausible(products)).sort((a, b) => a.price - b.price);
+}
+
+/**
+ * The same store often lists one product under several ids (variants of one parent on Amazon), which
+ * would show as identical rows. Keep the first of each store + title + price.
+ */
+export function dropRepeats(products: Product[]): Product[] {
+  const seen = new Set<string>();
+  return products.filter((p) => {
+    const key = `${p.vendor}|${normalizeSpaces(p.title).trim().toLowerCase()}|${p.price.toFixed(2)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 const STOP_WORDS = new Set(["the", "and", "with", "for", "of", "in", "on", "to", "by", "new", "used", "renewed", "restored", "refurbished"]);
