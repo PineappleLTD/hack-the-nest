@@ -1,4 +1,4 @@
-# Agent Shop
+# vendr
 
 Shopping without the runaround. Three tools in one web app:
 

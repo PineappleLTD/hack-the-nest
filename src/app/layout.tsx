@@ -3,7 +3,7 @@ import { STARTED_SCRIPT } from "@/lib/started";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Shop",
+  title: "vendr",
   description: "Lowest prices from trusted stores, honest resale pricing, and deals with real sources.",
 };
 

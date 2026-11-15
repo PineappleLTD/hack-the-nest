@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 
 /*
  * Glass Reveal: a mark lingers big against the rim of a clear glass tile, the glass bends it into
- * colour at the corners, then lets go and leaves the mark. Used here for the Agent Shop cart.
+ * colour at the corners, then lets go and leaves the mark. Used here for the vendr cart.
  * Self-contained: the reveal engine is inlined below. One WebGL2 pass, no dependencies.
  * Shader and spring timeline ported from zanwei/glass-icon-reveal (MIT):
  * https://github.com/zanwei/glass-icon-reveal
@@ -1090,7 +1090,7 @@ function startEngine(
 }
 
 /* ------------------------------------------------------------------ *
- * CartGlassReveal: the Agent Shop cart, orange through dark glass on the black page.
+ * CartGlassReveal: the vendr cart, orange through dark glass on the black page.
  * Plays once on mount; a click replays it.
  * ------------------------------------------------------------------ */
 export type CartGlassRevealProps = Omit<GlassIconRevealProps, "logo">
@@ -1099,7 +1099,7 @@ export function CartGlassReveal({ tuning, ...props }: CartGlassRevealProps) {
   return (
     <GlassIconReveal
       logo={CART_SILHOUETTE}
-      label="Agent Shop"
+      label="vendr"
       look="dark"
       background="#000000"
       logoColor="#ff5a1f"
