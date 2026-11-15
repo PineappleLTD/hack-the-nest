@@ -82,10 +82,10 @@ function Home() {
 
               {/* First visit only: a big way in once the cart has arrived. */}
               <div className="landing-cta w-full">
-                <div className="min-h-0 overflow-hidden px-5 pb-12 pt-6">
+                <div className="min-h-0 overflow-hidden px-1 pb-2 pt-6">
                   <button
                     onClick={getStarted}
-                    className="gold-button cta-in mx-auto flex h-20 w-full max-w-md items-center justify-center rounded-full text-2xl font-semibold tracking-[-0.01em] text-white sm:h-24 sm:text-[28px]"
+                    className="cta-in mx-auto flex h-20 w-full max-w-md items-center justify-center rounded-full bg-white text-2xl font-semibold tracking-[-0.01em] text-black transition-colors hover:bg-[#e4e4e0] sm:h-24 sm:text-[28px]"
                   >
                     Shop
                   </button>
