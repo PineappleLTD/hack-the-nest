@@ -2,7 +2,7 @@ import { z } from "zod";
 import { db, hashKey } from "./db";
 import { webSearch, type WebPage } from "./exa";
 import { mapSettled, structured } from "./llm";
-import { hostOf, SHOP_VENDORS, storeKey } from "./vendors";
+import { hostOf, isFirstPartySource, MARKETPLACE_IDS, SHOP_VENDORS, storeKey } from "./vendors";
 
 export type Deal = {
   id: string;
@@ -99,18 +99,41 @@ export function dealsForStore(key: string): Deal[] {
   ).map(rowToDeal);
 }
 
-/** Deals for a whole store (sitewide or category), leaving out ones tied to a single product. */
+/**
+ * Deals worth showing next to a store's results: store-wide (sitewide or category, not tied to one
+ * product) and verifiable. That means published on the store's own site, or, for codes at stores
+ * that aren't marketplaces, the same code listed by at least two independent sites. A code on one
+ * coupon site alone is usually SEO filler that never worked. One row per code.
+ */
 export function storeWideDeals(key: string): Deal[] {
-  return dealsForStore(key).filter((d) => d.scope === "sitewide" || d.scope === "category");
+  const all = dealsForStore(key);
+  const hostsByCode = new Map<string, Set<string>>();
+  for (const d of all) {
+    if (!d.code) continue;
+    const c = d.code.toUpperCase();
+    if (!hostsByCode.has(c)) hostsByCode.set(c, new Set());
+    hostsByCode.get(c)!.add(d.sourceHost);
+  }
+  const seenCodes = new Set<string>();
+  return all.filter((d) => {
+    if (d.scope !== "sitewide" && d.scope !== "category") return false;
+    const firstParty = isFirstPartySource(key, d.sourceHost);
+    const corroborated = !!d.code && !MARKETPLACE_IDS.has(key) && (hostsByCode.get(d.code.toUpperCase())?.size ?? 0) >= 2;
+    if (!firstParty && !corroborated) return false;
+    if (d.code) {
+      const c = d.code.toUpperCase();
+      if (seenCodes.has(c)) return false;
+      seenCodes.add(c);
+    }
+    return true;
+  });
 }
 
-/** Active deal counts for each shop vendor id, for search-result badges. */
+/** Verifiable store-wide deal counts for each shop vendor id, for search-result badges. */
 export function dealCountsByVendor(): Record<string, number> {
-  const rows = db
-    .prepare(`SELECT store_key, COUNT(*) AS n FROM deals WHERE ${ACTIVE} AND scope IN ('sitewide', 'category') GROUP BY store_key`)
-    .all(today()) as { store_key: string; n: number }[];
-  const ids = new Set(SHOP_VENDORS.map((v) => v.id));
-  return Object.fromEntries(rows.filter((r) => ids.has(r.store_key)).map((r) => [r.store_key, r.n]));
+  return Object.fromEntries(
+    SHOP_VENDORS.map((v) => [v.id, storeWideDeals(v.id).length] as const).filter(([, n]) => n > 0),
+  );
 }
 
 function grounded(text: string, d: z.infer<typeof DealsSchema>["deals"][number]): boolean {

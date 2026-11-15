@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { webSearch, type WebPage } from "./exa";
+import { freshPages, searchUrls, type WebPage } from "./exa";
 import { mapSettled, structured } from "./llm";
-import { SHOP_VENDORS, vendorForUrl, type Vendor } from "./vendors";
+import { isProductPage, SHOP_VENDORS, vendorForUrl, type Vendor } from "./vendors";
 
 export const CONDITIONS = ["new", "used", "refurbished", "unknown"] as const;
 export type Condition = (typeof CONDITIONS)[number];
@@ -83,25 +83,27 @@ export async function extractProduct(page: WebPage, query: string, vendor: Vendo
   };
 }
 
-/** Search all trusted vendors, extract grounded prices, sort cheapest first. */
+/** Exa returns up to this many URLs per store (same price for 1-25); only product pages are read. */
+const URLS_PER_VENDOR = 15;
+const PAGES_PER_VENDOR = 6;
+
+/**
+ * Search all trusted vendors, extract grounded prices, sort cheapest first.
+ * Per vendor: a cheap URL-only search, keep single product pages (search and category pages
+ * never have one price), read those pages fresh (prices are never older than an hour), extract.
+ * Each vendor's pages are extracted as soon as its own search returns.
+ */
 export async function searchProducts(query: string): Promise<Product[]> {
-  // One Exa call per vendor keeps results diverse (a single combined call tends to be all-Amazon).
-  // Each vendor's pages are extracted as soon as its search returns, so the slowest vendor sets
-  // the total time instead of every search finishing first and then every extraction.
-  const seen = new Set<string>();
   const settled = await Promise.allSettled(
     SHOP_VENDORS.map(async (v) => {
-      const pages = await webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 });
-      const mine: { page: WebPage; vendor: Vendor }[] = [];
-      for (const page of pages) {
-        const vendor = vendorForUrl(page.url);
-        if (!vendor || seen.has(page.url)) continue;
-        seen.add(page.url);
-        mine.push({ page, vendor });
-      }
+      const hits = await searchUrls(query, { includeDomains: [v.domain], numResults: URLS_PER_VENDOR });
+      const urls = [...new Set(hits.map((h) => h.url))]
+        .filter((u) => vendorForUrl(u)?.id === v.id && isProductPage(u, v))
+        .slice(0, PAGES_PER_VENDOR);
+      const pages = urls.length ? await freshPages(urls) : [];
       // A page whose extraction fails is skipped; if all of this vendor's pages fail, the vendor fails.
-      const products = await mapSettled(mine, mine.length, ({ page, vendor }) => extractProduct(page, query, vendor));
-      return { products: products.filter((p): p is Product => p !== null), pages: mine.length };
+      const products = await mapSettled(pages, pages.length, (page) => extractProduct(page, query, v));
+      return { products: products.filter((p): p is Product => p !== null), pages: pages.length };
     }),
   );
   const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
@@ -113,19 +115,40 @@ export async function searchProducts(query: string): Promise<Product[]> {
   return dropImplausible(products).sort((a, b) => a.price - b.price);
 }
 
+const STOP_WORDS = new Set(["the", "and", "with", "for", "of", "in", "on", "to", "by", "new", "used", "renewed", "restored", "refurbished"]);
+
+export function titleTokens(title: string): Set<string> {
+  const plain = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return new Set((plain.match(/[a-z0-9]+/g) ?? []).filter((w) => w.length > 1 && !STOP_WORDS.has(w)));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
 /**
- * Cheapest-first puts any junk price at the very top: an accessory listed under the product's name,
- * a stale crawl, a scam. With enough results to judge, drop prices under 40% of the median
- * (the same bar the Sell price check uses for comps).
+ * Cheapest-first puts any junk price at the very top: an accessory listed under the product's
+ * name, a stale crawl, a scam. A result is dropped only when at least three near-identical
+ * listings (by title) cost far more: under 40% of their median, the bar the Sell price check uses
+ * for comps. Broad searches ("pokemon") keep cheap items, because those have no close twins.
  */
-function dropImplausible(products: Product[]): Product[] {
-  if (products.length < 4) return products;
-  const sorted = products.map((p) => p.price).sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  return products.filter((p) => {
-    const ok = p.price >= median * 0.4;
-    if (!ok) console.log(`[search] dropped implausible $${p.price} (median $${median}): ${p.url}`);
+export function dropImplausible(products: Product[]): Product[] {
+  const tokens = products.map((p) => titleTokens(p.title));
+  return products.filter((p, i) => {
+    const peers = products.filter((_, j) => j !== i && jaccard(tokens[i], tokens[j]) >= 0.4).map((q) => q.price);
+    if (peers.length < 3) return true;
+    const med = median(peers);
+    const ok = p.price >= med * 0.4;
+    if (!ok) console.log(`[search] dropped implausible $${p.price} (similar listings' median $${med}): ${p.url}`);
     return ok;
   });
 }

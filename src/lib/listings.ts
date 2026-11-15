@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { webSearch } from "./exa";
+import { freshPages, searchUrls } from "./exa";
 import { mapSettled, tryStructured } from "./llm";
 import { extractProduct, type Product } from "./products";
-import { RESALE_MARKETS, vendorForUrl } from "./vendors";
+import { isProductPage, RESALE_MARKETS, vendorById, vendorForUrl } from "./vendors";
 import { cached } from "./db";
 
 export type SellInput = {
@@ -98,21 +98,23 @@ function fallbackCopy(input: SellInput) {
 
 async function findComps(input: SellInput, marketId: string): Promise<Product[]> {
   const query = MARKET_QUERY[marketId](`${input.item} ${input.condition}`);
+  const market = vendorById(marketId)!;
   // Exa errors propagate so priceCheck can tell "no comps" apart from "search is broken".
-  const pages = await webSearch(query, { includeDomains: MARKET_DOMAINS[marketId], numResults: 10, maxCharacters: 5000 });
+  // Same flow as Shop: URLs first, keep single listing pages, read them fresh so comps are current.
+  const hits = await searchUrls(query, { includeDomains: MARKET_DOMAINS[marketId], numResults: 15 });
+  const urls = [...new Set(hits.map((h) => h.url))]
+    .filter((u) => vendorForUrl(u)?.id === marketId && isProductPage(u, market))
+    .slice(0, 8);
+  const pages = urls.length ? await freshPages(urls, 5000) : [];
   // Throws only if every page's extraction failed (bad key, outage); priceCheck decides whether to surface it.
-  const results = await mapSettled(pages, 8, async (page) => {
-    const vendor = vendorForUrl(page.url);
-    if (!vendor || vendor.id !== marketId) return null;
-    return extractProduct(page, input.item, vendor);
-  });
+  const results = await mapSettled(pages, 8, (page) => extractProduct(page, input.item, market));
   return results.filter((p): p is Product => p !== null).sort((a, b) => a.price - b.price);
 }
 
 export async function priceCheck(input: SellInput): Promise<PriceCheck> {
   const key = { item: input.item.trim().toLowerCase(), condition: input.condition, notes: input.notes?.trim() ?? "" };
   const markets = await cached(
-    "price-check-v2",
+    "price-check-v3",
     key,
     async () => {
       if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set");
@@ -148,6 +150,8 @@ export async function priceCheck(input: SellInput): Promise<PriceCheck> {
       });
     },
     (ms) => ms.some((m) => m.comps.length > 0),
+    // Comps are live prices: only reuse a report briefly (e.g. reopening the same item).
+    10 * 60 * 1000,
   );
   return {
     input,
