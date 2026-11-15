@@ -13,6 +13,17 @@ function model(): string {
   return process.env.ANTHROPIC_MODEL || "claude-haiku-5-5";
 }
 
+/** Turn SDK errors into a short message that is safe and useful to show in the app. */
+function readableError(err: unknown): unknown {
+  if (err instanceof Anthropic.AuthenticationError) return new Error("Claude rejected the API key (check ANTHROPIC_API_KEY)");
+  if (err instanceof Anthropic.PermissionDeniedError) return new Error("This Anthropic API key can't use the configured model");
+  if (err instanceof Anthropic.NotFoundError) return new Error(`Claude model not found: ${model()} (check ANTHROPIC_MODEL)`);
+  if (err instanceof Anthropic.RateLimitError) return new Error("Claude is rate limiting requests right now; try again in a moment");
+  if (err instanceof Anthropic.APIConnectionError) return new Error("Couldn't reach the Claude API (network error)");
+  if (err instanceof Anthropic.APIError) return new Error(`Claude API error${err.status ? ` ${err.status}` : ""}`);
+  return err;
+}
+
 /**
  * Ask Claude for JSON matching `schema` (structured outputs; the SDK validates it with zod).
  * Returns null if the model refuses, runs out of tokens, or the output doesn't validate.
@@ -33,6 +44,8 @@ export async function structured<S extends z.ZodType>(
         max_tokens: 4096,
         system,
         messages: [{ role: "user", content: user }],
+        // These are short structured extractions; thinking roughly doubles output tokens and adds latency.
+        thinking: { type: "disabled" },
         output_config: { effort: "low", format: zodOutputFormat(schema) },
       });
       if (res.stop_reason !== "end_turn") {
@@ -42,7 +55,7 @@ export async function structured<S extends z.ZodType>(
       return (res.parsed_output as z.infer<S> | null) ?? null;
     } catch (err) {
       console.error(`[llm:${name}]`, err instanceof Error ? err.message : err);
-      throw err;
+      throw readableError(err);
     }
   });
 }

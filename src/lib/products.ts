@@ -86,26 +86,48 @@ export async function extractProduct(page: WebPage, query: string, vendor: Vendo
 /** Search all trusted vendors, extract grounded prices, sort cheapest first. */
 export async function searchProducts(query: string): Promise<Product[]> {
   // One Exa call per vendor keeps results diverse (a single combined call tends to be all-Amazon).
+  // Each vendor's pages are extracted as soon as its search returns, so the slowest vendor sets
+  // the total time instead of every search finishing first and then every extraction.
+  const seen = new Set<string>();
   const settled = await Promise.allSettled(
-    SHOP_VENDORS.map((v) => webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 })),
+    SHOP_VENDORS.map(async (v) => {
+      const pages = await webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 });
+      const mine: { page: WebPage; vendor: Vendor }[] = [];
+      for (const page of pages) {
+        const vendor = vendorForUrl(page.url);
+        if (!vendor || seen.has(page.url)) continue;
+        seen.add(page.url);
+        mine.push({ page, vendor });
+      }
+      // A page whose extraction fails is skipped; if all of this vendor's pages fail, the vendor fails.
+      const products = await mapSettled(mine, mine.length, ({ page, vendor }) => extractProduct(page, query, vendor));
+      return { products: products.filter((p): p is Product => p !== null), pages: mine.length };
+    }),
   );
   const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
   failures.forEach((f) => console.error("[search]", f.reason instanceof Error ? f.reason.message : f.reason));
-  if (failures.length === settled.length) throw failures[0].reason;
-  const perVendor = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
+  const ok = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const products = ok.flatMap((r) => r.products);
+  // Nothing found and no vendor got as far as reading pages: that's an outage or a bad key, not "no results".
+  if (!products.length && failures.length && !ok.some((r) => r.pages > 0)) throw failures[0].reason;
+  return dropImplausible(products).sort((a, b) => a.price - b.price);
+}
 
-  const pages: { page: WebPage; vendor: Vendor }[] = [];
-  const seen = new Set<string>();
-  for (const page of perVendor.flat()) {
-    const vendor = vendorForUrl(page.url);
-    if (!vendor || seen.has(page.url)) continue;
-    seen.add(page.url);
-    pages.push({ page, vendor });
-  }
-
-  // A page whose extraction fails is skipped; if every page fails (bad key, outage) the error surfaces.
-  const products = await mapSettled(pages, 10, ({ page, vendor }) => extractProduct(page, query, vendor));
-  return products.filter((p): p is Product => p !== null).sort((a, b) => a.price - b.price);
+/**
+ * Cheapest-first puts any junk price at the very top: an accessory listed under the product's name,
+ * a stale crawl, a scam. With enough results to judge, drop prices under 40% of the median
+ * (the same bar the Sell price check uses for comps).
+ */
+function dropImplausible(products: Product[]): Product[] {
+  if (products.length < 4) return products;
+  const sorted = products.map((p) => p.price).sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return products.filter((p) => {
+    const ok = p.price >= median * 0.4;
+    if (!ok) console.log(`[search] dropped implausible $${p.price} (median $${median}): ${p.url}`);
+    return ok;
+  });
 }
 
 // ---------- Plain-English filters ----------
