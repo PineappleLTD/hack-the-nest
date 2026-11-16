@@ -6,6 +6,10 @@ Shopping without the runaround. Three tools in one web app:
 - **Sell**: describe what you're selling. You get comparable listings from eBay, Mercari and Facebook Marketplace, a recommended price for each site, and a listing ready to post.
 - **Deals**: coupon codes and sales for any store, each linked to the page it was found on. No affiliate links and no tracking.
 
+## Live link
+
+https://vendr-21lw.onrender.com/
+
 ## Trust rules
 
 - **Every price links to a real page.** The model has to quote the exact price text, and we check that text appears on the page. If it doesn't, the result is dropped.
