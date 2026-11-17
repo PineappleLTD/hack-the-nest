@@ -48,10 +48,10 @@ export async function POST(req: Request) {
 
   item = item.trim();
   if (!item) return badRequest("item is required");
-  if (!condition.trim()) condition = "Good";
 
   try {
-    const result = await priceCheck({ item, condition, notes });
+    // No condition unless the seller picked one; many items (food, sealed goods) don't have one.
+    const result = await priceCheck({ item, condition: condition.trim() || undefined, notes });
     return NextResponse.json({ ...result, photoUrl });
   } catch (err) {
     return serverError(err);

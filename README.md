@@ -1,4 +1,4 @@
-# Agent Shop
+# vendr
 
 Shopping without the runaround. Three tools in one web app:
 
@@ -14,7 +14,7 @@ https://vendr-21lw.onrender.com/
 
 - **Every price links to a real page.** The model has to quote the exact price text, and we check that text appears on the page. If it doesn't, the result is dropped.
 - **Deals are checked the same way.** A code (or the discount text) has to appear on the source page.
-- **All LLM output is validated** with OpenAI structured outputs plus a zod schema. Anything that fails validation is thrown away.
+- **All LLM output is validated** with Claude structured outputs plus a zod schema. Anything that fails validation is thrown away.
 - **Product URLs and vendors come from the page we read**, never from model output.
 
 ## Run it
@@ -31,8 +31,8 @@ npm run seed                 # optional: warm the cache with demo queries (app m
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `EXA_API_KEY` | yes | Live web search and page text (Exa) |
-| `OPENAI_API_KEY` | yes | Structured extraction, filters, listing copy |
-| `OPENAI_MODEL` | yes | Model name, e.g. `gpt-4.1-mini` (not hardcoded) |
+| `ANTHROPIC_API_KEY` | yes | Claude: structured extraction, filters, listing copy |
+| `ANTHROPIC_MODEL` | no | Defaults to `claude-haiku-5-5` |
 | `EBAY_OAUTH_TOKEN` | no | Enables **Post to eBay** (Sell Inventory API, user token) |
 | `EBAY_APP_ID` | no | Reserved for eBay Browse API |
 | `EBAY_ENV` | no | Set to `sandbox` to use eBay's sandbox |
@@ -44,17 +44,17 @@ All API keys stay on the server. The browser only talks to `/api/*` routes.
 
 | Route | What it does |
 | --- | --- |
-| `POST /api/search` | One Exa search per vendor (with page text) → OpenAI extracts title, price, condition → drop anything without a grounded price → sort by price |
-| `POST /api/filter` | Plain English → `{ maxPrice, minPrice, vendors, conditions, mustInclude, mustExclude }` → applied to the current results |
+| `POST /api/search` | One Exa search per vendor (with page text) → Claude extracts title, price, condition → drop anything without a grounded price → sort by price |
+| `POST /api/filter` | The only agent step in Shop, run only when the shopper asks. Plain English plus the current results → Claude returns price/store/condition limits (applied in code) and which results fail anything else (model, size, color…) |
 | `POST /api/price-check` | Exa comps on eBay / Mercari / Facebook → grounded prices → range plus a recommended price slightly under the lowest credible comp → listing copy per site |
 | `POST /api/deals` | Exa search across coupon sites and retailer promo pages → grounded deals saved to SQLite with `foundAt` |
 | `GET /api/deals?store=bestbuy` | Stored deals for a store that haven't expired (powers the "N deals" badges on search results) |
 | `POST /api/ebay/list` | Inventory item → offer → publish (only when `EBAY_OAUTH_TOKEN` is set) |
 | `POST /api/payment-link` | Stripe Payment Link at the chosen price (only when `STRIPE_SECRET_KEY` is set) |
 
-Every Exa query and LLM extraction is cached in SQLite (`data/agent-shop.db`), keyed by its inputs. A repeated search is instant and works without a network connection. Delete the file to clear the cache.
+Every Exa query and LLM extraction is cached in SQLite (`data/agent-shop.db`), keyed by its inputs. A repeated search is instant and works without a network connection. Deal searches refresh after 12 hours (the old copy is served if the refresh fails). Delete the file to clear the cache.
 
-**Stack:** Next.js (App Router), TypeScript, Tailwind, better-sqlite3, exa-js, openai, zod.
+**Stack:** Next.js (App Router), TypeScript, Tailwind, better-sqlite3, exa-js, @anthropic-ai/sdk, zod.
 
 ## Known limitations
 

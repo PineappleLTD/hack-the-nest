@@ -1,58 +1,212 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
+/* One world: black ground, white text at two strengths, one orange. */
 :root {
-  --background: #faf9f7;
-  --foreground: #1c1917;
+  --background: #000000;
+  --foreground: #ededeb;
+  --muted-foreground: #8f8f8a;
+  --faint: #5e5e5a;
+  --line: #232322;
+  --border: #232322;
+  --input: #2e2e2c;
+  --ring: #ff5a1f;
+  --brand: #ff5a1f;
+  --primary: #ff5a1f;
+  --primary-foreground: #000000;
+  --secondary: #1a1a19;
+  --secondary-foreground: #ededeb;
+  --popover: #121211;
+  --popover-foreground: #ededeb;
+  --accent: #1f1f1d;
+  --accent-foreground: #ededeb;
+  --muted: #1a1a19;
+  --destructive: #ff6a5c;
+  --destructive-foreground: #000000;
+  --well: #f2f2ef;
+  --radius: 6px;
+  --page-top: 1.5rem;
+  color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-instrument-serif);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-well: var(--well);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    background: var(--background);
+    scrollbar-color: #2e2e2c transparent;
+    scrollbar-width: thin;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+  }
+  input,
+  textarea {
+    caret-color: var(--brand);
+  }
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--brand);
+    color: #000;
+  }
 }
 
-::selection {
-  background: #1c1917;
-  color: #faf9f7;
+/* First visit: the cart arrives big in glass, then a large Get started button.
+   Once started, the stage above the search bar ends exactly where the bar's top sits,
+   so the bar lands in the middle of the screen; the cart shrinks to fit above the headline. */
+.hero-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  /* Never so short that the cart disappears: on a very short window the bar sits a little low instead. */
+  height: max(calc(50svh - var(--page-top) - 1.75rem), 14rem);
+  transition: height 0.9s var(--ease-out-expo);
+}
+html:not([data-started]) .hero-stage {
+  /* The whole screen, less the hidden bar and the page's bottom padding, so nothing scrolls. */
+  height: calc(100svh - var(--page-top) - 3.5rem - 6rem);
+}
+.hero-glass {
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* On the landing only the glass cart plays; the dust arrives with the rest of the site. */
+.site-dust {
+  transition:
+    opacity 1.4s var(--ease-out-expo) 0.3s,
+    visibility 1.4s 0.3s;
+}
+html:not([data-started]) .site-dust {
+  opacity: 0;
+  visibility: hidden;
+}
+.landing-cta,
+.home-fold {
+  display: grid;
+  transition:
+    grid-template-rows 0.9s var(--ease-out-expo),
+    opacity 0.6s var(--ease-out-expo);
+}
+.landing-cta {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+}
+html:not([data-started]) .landing-cta {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+}
+.home-fold {
+  grid-template-rows: 1fr;
+}
+html:not([data-started]) .home-fold,
+html:not([data-started]) .home-only {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+}
+.home-only {
+  transition:
+    max-width 0.7s var(--ease-out-expo),
+    opacity 0.6s var(--ease-out-expo) 0.25s;
+}
+.cta-in {
+  animation: rise 0.9s var(--ease-out-expo) 2.5s both;
 }
 
+/* Browser-drawn surfaces stay in the dark world. */
+input:-webkit-autofill,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill {
+  -webkit-text-fill-color: var(--foreground);
+  box-shadow: 0 0 0 1000px #000 inset;
+  caret-color: var(--brand);
+}
+
+/* Loading placeholders: a slow sheen across dark blocks. */
 @keyframes shimmer {
   100% {
     transform: translateX(100%);
   }
 }
-
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: #efece8;
+  background: #141413;
 }
 .skeleton::after {
   content: "";
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
-  animation: shimmer 1.4s infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: shimmer 1.6s infinite;
 }
 
-@keyframes fade-up {
+/* Results arriving: each row rises into place, staggered by price order. */
+@keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
+    transform: translateY(8px);
   }
 }
-.fade-up {
-  animation: fade-up 0.35s ease-out both;
+.rise {
+  animation: rise 0.5s var(--ease-out-expo) both;
+}
+
+/* When an applied deal reorders the list, only the rows move; the rest of the page holds still. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-group(*) {
+  animation-duration: 0.6s;
+  animation-timing-function: var(--ease-out-expo);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

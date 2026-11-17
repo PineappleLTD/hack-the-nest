@@ -3,6 +3,8 @@
  * Requires a user OAuth token (EBAY_OAUTH_TOKEN) with sell.inventory + sell.account scopes,
  * and a seller account that already has business policies and an inventory location.
  */
+import { NotConfiguredError } from "./http";
+
 const BASE = process.env.EBAY_ENV === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 const MARKETPLACE = "EBAY_US";
 
@@ -16,7 +18,7 @@ export type EbayListingInput = {
 
 async function ebay<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = process.env.EBAY_OAUTH_TOKEN;
-  if (!token) throw new Error("EBAY_OAUTH_TOKEN is not set");
+  if (!token) throw new NotConfiguredError("eBay posting isn't set up: add an eBay seller user token as EBAY_OAUTH_TOKEN in .env");
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: {
@@ -28,8 +30,15 @@ async function ebay<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
+  let json: { errors?: { longMessage?: string; message?: string }[] } = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    if (!res.ok) throw new Error(`eBay: HTTP ${res.status} ${res.statusText}`);
+    throw new Error("eBay: unexpected non-JSON response");
+  }
   if (!res.ok) {
+    if (res.status === 401) throw new Error("eBay: the seller token was rejected (it may have expired); generate a new EBAY_OAUTH_TOKEN");
     const msg = json?.errors?.[0]?.longMessage ?? json?.errors?.[0]?.message ?? `eBay ${res.status}`;
     throw new Error(`eBay: ${msg}`);
   }

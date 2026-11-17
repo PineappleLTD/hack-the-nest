@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { webSearch, type WebPage } from "./exa";
-import { mapLimit, tryStructured } from "./llm";
-import { SHOP_VENDORS, vendorForUrl, type Vendor } from "./vendors";
+import { freshPages, searchUrls, type WebPage } from "./exa";
+import { structured } from "./llm";
+import { SHOP_VENDORS, uniqueProductUrls, type Vendor } from "./vendors";
 
 export const CONDITIONS = ["new", "used", "refurbished", "unknown"] as const;
 export type Condition = (typeof CONDITIONS)[number];
@@ -18,8 +18,10 @@ export type Product = {
   condition: Condition;
 };
 
+// Field order matters: the model names what kind of item the page sells before it judges the match.
 const ExtractionSchema = z.object({
   isSingleProductPage: z.boolean(),
+  itemKind: z.string(),
   matchesQuery: z.boolean(),
   title: z.string(),
   priceText: z.string().nullable(),
@@ -33,7 +35,8 @@ const EXTRACT_SYSTEM = `You extract product listing data from the text of a sing
 Rules:
 - Only report what is literally on the page. Never guess or estimate a price.
 - isSingleProductPage: true only if the page is for one specific product/listing (not a search, category, review, or list page).
-- matchesQuery: true if the product is the item the shopper searched for (or a direct variant of it). False for accessories, cases, parts, or unrelated items.
+- itemKind: what kind of item this page sells, in a few plain words (e.g. "basketball jersey", "trading card", "phone case", "wireless earbuds", "tortilla chips").
+- matchesQuery: true only if itemKind is the same kind of item the shopper searched for, and it is that item or a direct variant of it (another size, color or edition). False for a different kind of item that shares a name, player, character or brand: accessories, cases, parts, replacement pieces, or, for example, a trading card, poster or figure when the shopper searched for a jersey.
 - priceText: the exact current selling price string as it appears on the page (e.g. "$189.99"). Use the buy-box / current price, not a list/was price, shipping cost, monthly payment, or a price for a different product. null if none is clearly stated.
 - price: the numeric value of priceText (e.g. 189.99), or null.
 - currency: ISO code, e.g. "USD".
@@ -45,17 +48,36 @@ function normalizeSpaces(s: string) {
   return s.replace(/\s+/g, " ");
 }
 
+/**
+ * True if `quote` appears in `text` as a whole amount, not as part of a longer number:
+ * "$14" is not in "$149.99", "$1" is not in "$1,299", "49.99" is not in "149.99".
+ */
+export function containsAmount(text: string, quote: string): boolean {
+  if (!quote) return false;
+  const startsWithDigit = /^\d/.test(quote);
+  const endsWithDigit = /\d$/.test(quote);
+  for (let i = text.indexOf(quote); i !== -1; i = text.indexOf(quote, i + 1)) {
+    const before = text[i - 1] ?? "";
+    const after = text.slice(i + quote.length, i + quote.length + 2);
+    if (startsWithDigit && /[\d.,]/.test(before)) continue;
+    if (endsWithDigit && /^(\d|[.,]\d)/.test(after)) continue;
+    return true;
+  }
+  return false;
+}
+
 /** Guard against hallucination: the quoted price must appear on the page and agree with the number. */
 export function priceIsGrounded(text: string, priceText: string | null, price: number | null): price is number {
   if (!priceText || price == null || !Number.isFinite(price) || price <= 0) return false;
-  if (!normalizeSpaces(text).includes(normalizeSpaces(priceText.trim()))) return false;
+  if (!containsAmount(normalizeSpaces(text), normalizeSpaces(priceText.trim()))) return false;
   const digits = priceText.replace(/[^0-9.]/g, "");
   const n = parseFloat(digits);
   return Number.isFinite(n) && Math.abs(n - price) < 0.01;
 }
 
+/** Throws on LLM/API errors; returns null when the page isn't a grounded, priced match. */
 export async function extractProduct(page: WebPage, query: string, vendor: Vendor): Promise<Product | null> {
-  const data = await tryStructured(
+  const data = await structured(
     "product_extraction",
     ExtractionSchema,
     EXTRACT_SYSTEM,
@@ -82,28 +104,112 @@ export async function extractProduct(page: WebPage, query: string, vendor: Vendo
   };
 }
 
-/** Search all trusted vendors, extract grounded prices, sort cheapest first. */
-export async function searchProducts(query: string): Promise<Product[]> {
-  // One Exa call per vendor keeps results diverse (a single combined call tends to be all-Amazon).
+/** Exa returns up to this many URLs per store (same price for 1-25); only product pages are read. */
+const URLS_PER_VENDOR = 15;
+const PAGES_PER_VENDOR = 6;
+
+export type SearchOptions = {
+  /** Called with each product as soon as its page is read and checked, before the final list is ready. */
+  onProduct?: (product: Product) => void;
+  /** Once aborted (the shopper moved on to another search), pages still arriving aren't sent to Claude. */
+  signal?: AbortSignal;
+};
+
+/**
+ * Search all trusted vendors, extract grounded prices, sort cheapest first.
+ * Per vendor: a cheap URL-only search, keep single product pages (search and category pages
+ * never have one price), read those pages fresh (prices are never older than an hour), extract.
+ * Each page is extracted the moment it arrives, so the first prices are ready while slower pages
+ * are still crawling; `onProduct` hears about each one. The returned list is the final word: it
+ * also drops repeats and implausible prices, which can only be judged once everything is in.
+ */
+export async function searchProducts(query: string, opts: SearchOptions = {}): Promise<Product[]> {
   const settled = await Promise.allSettled(
-    SHOP_VENDORS.map((v) => webSearch(query, { includeDomains: [v.domain], numResults: 5, maxCharacters: 6000 })),
+    SHOP_VENDORS.map(async (v) => {
+      const hits = await searchUrls(query, { includeDomains: [v.domain], numResults: URLS_PER_VENDOR });
+      const urls = uniqueProductUrls(
+        hits.map((h) => h.url),
+        v,
+      ).slice(0, PAGES_PER_VENDOR);
+      const extractions: Promise<Product | null>[] = [];
+      const pages = urls.length
+        ? await freshPages(urls, undefined, (page) => {
+            if (opts.signal?.aborted) return;
+            extractions.push(
+              extractProduct(page, query, v).then((p) => {
+                if (p && !opts.signal?.aborted) opts.onProduct?.(p);
+                return p;
+              }),
+            );
+          })
+        : [];
+      // A page whose extraction fails is skipped; if all of this vendor's pages fail, the vendor fails.
+      const results = await Promise.allSettled(extractions);
+      const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (results.length > 0 && errors.length === results.length) throw errors[0].reason;
+      const products = results.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
+      return { products, pages: pages.length };
+    }),
   );
   const failures = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
   failures.forEach((f) => console.error("[search]", f.reason instanceof Error ? f.reason.message : f.reason));
-  if (failures.length === settled.length) throw failures[0].reason;
-  const perVendor = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
+  const ok = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const products = ok.flatMap((r) => r.products);
+  // Nothing found and no vendor got as far as reading pages: that's an outage or a bad key, not "no results".
+  if (!products.length && failures.length && !ok.some((r) => r.pages > 0)) throw failures[0].reason;
+  return dropRepeats(dropImplausible(products)).sort((a, b) => a.price - b.price);
+}
 
-  const pages: { page: WebPage; vendor: Vendor }[] = [];
+/**
+ * The same store often lists one product under several ids (variants of one parent on Amazon), which
+ * would show as identical rows. Keep the first of each store + title + price.
+ */
+export function dropRepeats(products: Product[]): Product[] {
   const seen = new Set<string>();
-  for (const page of perVendor.flat()) {
-    const vendor = vendorForUrl(page.url);
-    if (!vendor || seen.has(page.url)) continue;
-    seen.add(page.url);
-    pages.push({ page, vendor });
-  }
+  return products.filter((p) => {
+    const key = `${p.vendor}|${normalizeSpaces(p.title).trim().toLowerCase()}|${p.price.toFixed(2)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
-  const products = await mapLimit(pages, 10, ({ page, vendor }) => extractProduct(page, query, vendor));
-  return products.filter((p): p is Product => p !== null).sort((a, b) => a.price - b.price);
+const STOP_WORDS = new Set(["the", "and", "with", "for", "of", "in", "on", "to", "by", "new", "used", "renewed", "restored", "refurbished"]);
+
+export function titleTokens(title: string): Set<string> {
+  const plain = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return new Set((plain.match(/[a-z0-9]+/g) ?? []).filter((w) => w.length > 1 && !STOP_WORDS.has(w)));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/**
+ * Cheapest-first puts any junk price at the very top: an accessory listed under the product's
+ * name, a stale crawl, a scam. A result is dropped only when at least three near-identical
+ * listings (by title) cost far more: under 40% of their median, the bar the Sell price check uses
+ * for comps. Broad searches ("pokemon") keep cheap items, because those have no close twins.
+ */
+export function dropImplausible(products: Product[]): Product[] {
+  const tokens = products.map((p) => titleTokens(p.title));
+  return products.filter((p, i) => {
+    const peers = products.filter((_, j) => j !== i && jaccard(tokens[i], tokens[j]) >= 0.4).map((q) => q.price);
+    if (peers.length < 3) return true;
+    const med = median(peers);
+    const ok = p.price >= med * 0.4;
+    if (!ok) console.log(`[search] dropped implausible $${p.price} (similar listings' median $${med}): ${p.url}`);
+    return ok;
+  });
 }
 
 // ---------- Plain-English filters ----------
@@ -113,30 +219,45 @@ export const FilterSpecSchema = z.object({
   minPrice: z.number().nullable(),
   vendors: z.array(z.enum(SHOP_VENDORS.map((v) => v.id) as [string, ...string[]])),
   conditions: z.array(z.enum(CONDITIONS)),
-  mustInclude: z.array(z.string()),
-  mustExclude: z.array(z.string()),
+  exclude: z.array(z.number()),
 });
 export type FilterSpec = z.infer<typeof FilterSpecSchema>;
 
-export const FILTER_SYSTEM = `Convert a shopper's plain-English refinement into a filter spec.
-- maxPrice / minPrice: numbers in USD, or null if not mentioned. "under $200" -> maxPrice 200.
-- vendors: vendor ids to KEEP, chosen from: ${SHOP_VENDORS.map((v) => `${v.id} (${v.name})`).join(", ")}. Empty array = all vendors.
+export const FILTER_SYSTEM = `You apply a shopper's plain-English refinement to a numbered list of search results.
+Return:
+- maxPrice / minPrice: USD bounds the shopper stated, or null. "under $200" -> maxPrice 200.
+- vendors: store ids to KEEP, chosen from: ${SHOP_VENDORS.map((v) => `${v.id} (${v.name})`).join(", ")}. Empty array = all stores.
 - conditions: conditions to KEEP from new, used, refurbished, unknown. Empty = all. "new only" -> ["new"].
-- mustInclude: words/phrases that must appear in the product title (e.g. a color, size, model). Empty if none.
-- mustExclude: words/phrases that must NOT appear in the title. Empty if none.
-Only include constraints the shopper actually stated.`;
+- exclude: the numbers of results that fail any OTHER part of the request (model, size, capacity, color, bundle or not, brand, edition, etc.), judged from the title. Don't repeat price/store/condition here; those fields cover them. Empty if the request has no other criteria.
+Only apply constraints the shopper actually stated. If a title doesn't say whether it matches a criterion, keep it.`;
+
+const MAX_FILTER_PRODUCTS = 120;
+
+function filterPrompt(text: string, products: Product[]): string {
+  const lines = products.map((p, i) => `${i}. ${p.title} | $${p.price.toFixed(2)} | ${p.vendorName} | ${p.condition}`);
+  return `Refinement: ${text}\n\nResults:\n${lines.join("\n")}`;
+}
 
 export function applyFilter(products: Product[], spec: FilterSpec): Product[] {
-  const inc = spec.mustInclude.map((s) => s.toLowerCase());
-  const exc = spec.mustExclude.map((s) => s.toLowerCase());
-  return products.filter((p) => {
+  const exclude = new Set(spec.exclude);
+  return products.filter((p, i) => {
+    if (exclude.has(i)) return false;
     if (spec.maxPrice != null && p.price > spec.maxPrice) return false;
     if (spec.minPrice != null && p.price < spec.minPrice) return false;
     if (spec.vendors.length && !spec.vendors.includes(p.vendor)) return false;
     if (spec.conditions.length && !spec.conditions.includes(p.condition)) return false;
-    const t = p.title.toLowerCase();
-    if (inc.some((w) => !t.includes(w))) return false;
-    if (exc.some((w) => t.includes(w))) return false;
     return true;
   });
+}
+
+/**
+ * The only agent step in Shop, and it runs only when the shopper asks for a filter.
+ * Hard constraints (price, store, condition) are applied in code; Claude flags the
+ * results that fail anything else. Order (cheapest first) is preserved.
+ */
+export async function filterProducts(text: string, products: Product[]): Promise<{ spec: FilterSpec; products: Product[] } | null> {
+  const list = products.slice(0, MAX_FILTER_PRODUCTS);
+  const spec = await structured("filter_spec", FilterSpecSchema, FILTER_SYSTEM, filterPrompt(text, list));
+  if (!spec) return null;
+  return { spec, products: applyFilter(list, spec) };
 }
